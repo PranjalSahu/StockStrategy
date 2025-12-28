@@ -1,0 +1,6 @@
+.picks-row { display:flex; flex-wrap:nowrap; overflow-x:auto; gap:8px; }
+.pick-btn { cursor:pointer; border:1px solid rgba(88,166,255,0.35);
+            background:rgba(88,166,255,0.18); color:#e6edf3; border-radius:999px;
+            padding:10px 14px; font-weight:800; font-size:14px; white-space:nowrap; }
+.pick-btn.active { background:rgba(126,231,135,0.22); border-color:rgba(126,231,135,0.55); }
+#ticker-panel { margin-top:14px; }

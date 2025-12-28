@@ -1,0 +1,25 @@
+.custom-tabs {
+    margin-bottom: 20px;
+}
+
+.custom-tab {
+    background-color: #1e293b !important;
+    color: #e6edf3 !important;
+    border: none !important;
+    border-bottom: 2px solid #334155 !important;
+    padding: 10px 16px !important;
+}
+
+.custom-tab--selected {
+    background-color: #0f172a !important;
+    color: #58a6ff !important;
+    border-bottom: 3px solid #58a6ff !important;
+    font-weight: bold !important;
+}
+
+.picks-tab-panel {
+    background-color: #0f172a;
+    border-radius: 8px;
+    min-height: 160px;
+    padding: 20px;
+}
