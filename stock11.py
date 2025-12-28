@@ -500,8 +500,8 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                         dcc.Tab(
                             label=strategy,
                             value=strategy,
-                            className='top-picks-tab',
-                            selected_className='top-picks-tab--selected',
+                            className='custom-tab',
+                            selected_className='custom-tab--selected',
                             children=html.Div([
                                 html.Div(strategy, style={'fontWeight': 'bold', 'fontSize': '11px', 'marginBottom': '5px', 'color': '#8b949e', 'textTransform': 'uppercase'}),
                                 html.Div([
