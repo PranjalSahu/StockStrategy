@@ -11,9 +11,12 @@ import logging
 from datetime import date, timedelta
 from typing import List, Optional, Dict
 from joblib import Parallel, delayed
-
+from joblib import Memory
 import pandas as pd
 import numpy as np
+
+# Create a persistent cache directory
+memory = Memory("cache/backtest", verbose=0, compress=1)  # compress=1 for smaller files
 
 try:
     import yfinance as yf
@@ -363,6 +366,7 @@ def run_comprehensive_backtest_old(data_map: dict, benchmark_data: dict, strateg
     return pd.DataFrame(results)
 
 # 3. Replace the entire run_comprehensive_backtest function with this:
+@memory.cache
 def run_comprehensive_backtest(data_map: dict, benchmark_data: dict, strategies: List[str], 
                                 top_n: int = 10, lookback_days: int = 30, months_back: int = 6,
                                 n_jobs: int = -1) -> pd.DataFrame:
@@ -529,18 +533,8 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
             dcc.Store(id='store-results', data=store_initial),
 
             html.Div(className='card', children=[
-                html.H2('Strategy Performance Summary'),
-                dash_table.DataTable(
-                    id='strategy-table',
-                    data=strat_summary.round(2).to_dict('records'),
-                    columns=table_columns,
-                    style_cell={'textAlign': 'center', 'padding': '10px', 'fontSize': 12, 'backgroundColor': 'transparent', 'color': '#e6edf3'},
-                    style_header={'backgroundColor': '#0f172a', 'color': '#e6edf3', 'fontWeight': 'bold'},
-                    style_data_conditional=[
-                        {'if': {'column_id': 'mean_return', 'filter_query': '{mean_return} > 5'}, 'backgroundColor': 'rgba(46,204,113,0.2)', 'color': '#e6edf3'},
-                        {'if': {'column_id': 'mean_return', 'filter_query': '{mean_return} < 0'}, 'backgroundColor': 'rgba(231,76,60,0.2)', 'color': '#e6edf3'},
-                    ]
-                )
+                 html.H2('Strategy Performance Summary'),
+                html.Div(id='strategy-table-container', children=[])
             ]),
 
             html.Div(className='card', children=[
@@ -554,6 +548,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 ]),
                 html.Div(id='chart-content', style={'marginTop': '20px'})
             ]),
+            
             html.Div(className='card', children=[
                 html.H2('Benchmark Performance Summary'),
                 html.Div(className='flex gap-16 flex-center', children=[
@@ -726,6 +721,89 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                               template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=550)
 
         return dcc.Graph(figure=fig)
+
+    @app.callback(
+        Output('strategy-table-container', 'children'),
+        Input('store-results', 'data')
+    )
+    def update_strategy_table(store_json):
+        if store_json is None:
+            raise PreventUpdate
+        
+        df = pd.read_json(store_json, orient='split')
+        strat, _ = build_summaries(df)
+        strat = strat.round(2)
+        
+        # Sort by average return descending (same as before)
+        strat = strat.sort_values('mean_return', ascending=False)
+        
+        # Build HTML table
+        headers = [
+            html.Th(col['name'], style={
+                'textAlign': 'center', 'padding': '10px', 'backgroundColor': '#0f172a',
+                'color': '#e6edf3', 'fontWeight': 'bold'
+            }) for col in table_columns
+        ]
+        
+        rows = []
+        for _, row in strat.iterrows():
+            cells = []
+            for col in table_columns:
+                col_id = col['id']
+                value = row[col_id]
+                # Apply conditional background for mean_return column
+                cell_style = {
+                    'textAlign': 'center',
+                    'padding': '10px',
+                    'fontSize': '12px',
+                    'backgroundColor': 'transparent',
+                    'color': '#e6edf3'
+                }
+                if col_id == 'mean_return':
+                    if value > 5:
+                        cell_style['backgroundColor'] = 'rgba(46,204,113,0.2)'
+                    elif value < 0:
+                        cell_style['backgroundColor'] = 'rgba(231,76,60,0.2)'
+                cells.append(html.Td(f"{value:.2f}" if isinstance(value, float) else str(value), style=cell_style))
+            rows.append(html.Tr(cells))
+        
+        table = html.Table([
+            html.Thead(html.Tr(headers)),
+            html.Tbody(rows)
+        ], style={'width': '100%', 'borderCollapse': 'collapse'})    
+        return table
+
+    # @app.callback(
+    #     [Output('strategy-table', 'data')],
+    #     Input('store-results', 'data')
+    # )
+    # def update_dashboard(store_json):
+    #     if store_json is None:
+    #         raise PreventUpdate
+        
+    #     df = pd.read_json(store_json, orient='split')
+    #     strat, bench = build_summaries(df)
+
+    #     # Update table
+    #     table_data = strat.round(2).to_dict('records')
+
+    #     # Update top picks (your existing logic)
+    #     picks, asof = compute_top_picks(df)
+    #     top_children = []
+    #     for strategy in sorted(set(p['strategy'] for p in picks)):
+    #         strategy_picks = [p['ticker'] for p in picks if p['strategy'] == strategy]
+    #         top_children.append(
+    #             html.Div([
+    #                 html.Div(strategy.replace('_', ' ').title(), style={'fontWeight': 'bold', 'marginBottom': '8px', 'color': '#58a6ff'}),
+    #                 html.Div([html.Span(className='pick-chip', children=t) for t in strategy_picks],
+    #                         style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px'})
+    #             ], style={'marginBottom': '20px'})
+    #         )
+
+    #     # For tabbed charts: return current chart (or let separate callback handle it)
+    #     # Here we just return table and picks
+    #     return table_data
+    
     return app
 
 # ===== Main =====
