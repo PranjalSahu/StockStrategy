@@ -492,15 +492,26 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                         f"From 5 best-performing strategies — as of {initial_date.strftime('%Y-%m-%d')}" if initial_date is not None else ''
                     ))
                 ]),
-                html.Div(id='top-picks', className='picks-container', children=[
-                    html.Div([
-                        html.Div(strategy, style={'fontWeight': 'bold', 'fontSize': '11px', 'marginBottom': '5px', 'color': '#8b949e', 'textTransform': 'uppercase'}),
-                        html.Div([
-                            html.Span(className='pick-chip', children=pick['ticker']) 
-                            for pick in initial_top if pick['strategy'] == strategy
-                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px', 'marginBottom': '15px'})
-                    ]) for strategy in sorted(set(pick['strategy'] for pick in initial_top), key=lambda s: [pick['strategy'] for pick in initial_top].index(s))
-                ])
+                dcc.Tabs(
+                    id='top-picks-tabs',
+                    value=(sorted(set(pick['strategy'] for pick in initial_top), key=lambda s: [pick['strategy'] for pick in initial_top].index(s))[0] if initial_top else None),
+                    className='top-picks-tabs',
+                    children=[
+                        dcc.Tab(
+                            label=strategy,
+                            value=strategy,
+                            className='top-picks-tab',
+                            selected_className='top-picks-tab--selected',
+                            children=html.Div([
+                                html.Div(strategy, style={'fontWeight': 'bold', 'fontSize': '11px', 'marginBottom': '5px', 'color': '#8b949e', 'textTransform': 'uppercase'}),
+                                html.Div([
+                                    html.Span(className='pick-chip', children=pick['ticker']) 
+                                    for pick in initial_top if pick['strategy'] == strategy
+                                ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px', 'marginBottom': '15px'})
+                            ])
+                        ) for strategy in sorted(set(pick['strategy'] for pick in initial_top), key=lambda s: [pick['strategy'] for pick in initial_top].index(s))
+                    ]
+                ),
             ]),
 
             html.Div(className='hero', children=[
@@ -577,27 +588,25 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         Output('win-rate-comparison', 'figure'),
         Output('return-distribution', 'figure'),
         Output('rolling-performance', 'figure'),
-        Output('top-picks', 'children'),
+        Output('top-picks-tabs', 'children'),
+        Output('top-picks-tabs', 'value')
     ], [Input('store-results', 'data')])
     def update(store_json):
         df = pd.read_json(store_json, orient='split')
         strat, bench = build_summaries(df)
 
-        # Horizontal top picks
+        # Build top-picks tabs (one tab per top-5 strategy)
         picks, asof = compute_top_picks(df)
-        
-        # Group by strategy and create organized display
-        top_children = []
-        for strategy in sorted(set(p['strategy'] for p in picks), key=lambda s: [p['strategy'] for p in picks].index(s)):
+        strategies_in_picks = sorted(set(p['strategy'] for p in picks), key=lambda s: [p['strategy'] for p in picks].index(s))
+        tabs_children = []
+        for strategy in strategies_in_picks:
             strategy_picks = [p['ticker'] for p in picks if p['strategy'] == strategy]
-            top_children.append(
-                html.Div([
-                    html.Div(f"{strategy}", style={'fontWeight': 'bold', 'fontSize': '11px', 'marginBottom': '5px', 'color': '#8b949e', 'textTransform': 'uppercase'}),
-                    html.Div([
-                        html.Span(className='pick-chip', children=ticker) for ticker in strategy_picks
-                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px', 'marginBottom': '15px'})
-                ])
-            )
+            tab_content = html.Div([
+                html.Div(strategy, style={'fontWeight': 'bold', 'fontSize': '11px', 'marginBottom': '5px', 'color': '#8b949e', 'textTransform': 'uppercase'}),
+                html.Div([html.Span(className='pick-chip', children=ticker) for ticker in strategy_picks], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px', 'marginBottom': '15px'})
+            ])
+            tabs_children.append(dcc.Tab(label=strategy, value=strategy, className='top-picks-tab', selected_className='top-picks-tab--selected', children=tab_content))
+        selected_tab = strategies_in_picks[0] if strategies_in_picks else None
 
         # Charts remain the same
         fig1 = go.Figure([go.Bar(x=strat['strategy'], y=strat['mean_return'],
@@ -644,7 +653,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 fig5.add_trace(go.Scatter(x=sorted_df['entry_date'], y=sorted_df[col], mode='lines', name=f'{etf} Benchmark', line=dict(width=3, dash='dot'), opacity=0.7))
         fig5.update_layout(title='Rolling 30-Day Performance (vs Benchmarks)', xaxis_title='Entry Date', yaxis_title='Mean Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=520)
 
-        return strat.round(2).to_dict('records'), fig1, fig2, fig3, fig4, fig5, top_children
+        return strat.round(2).to_dict('records'), fig1, fig2, fig3, fig4, fig5, tabs_children, selected_tab
 
     # new callback method
     @app.callback(
