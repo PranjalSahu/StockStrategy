@@ -5,6 +5,11 @@ Dark-themed Momentum Trading Dashboard with "Top Picks Today"
 - Top Picks now displayed horizontally in one line
 """
 
+import feedparser
+from sklearn.metrics.pairwise import cosine_similarity
+from pathlib import Path
+from typing import List, Dict
+from flask import current_app
 # === INSERT: Add these near the top with the other imports ===
 import requests
 import json
@@ -12,7 +17,7 @@ from flask import request as flask_request, jsonify as flask_jsonify
 import os
 
 # Environment-configured Ollama URL (adjust if your Ollama host/port/path differs)
-OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434/api/generate')
+OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
 
 import sys
 import logging
@@ -22,6 +27,19 @@ from joblib import Parallel, delayed
 from joblib import Memory
 import pandas as pd
 import numpy as np
+
+
+
+# RAG Configuration
+EMBED_MODEL = "nomic-embed-text"
+LLM_MODEL = "gemma3:1b"#"gemma2:2b"  # Already used in chat, but defined here for consistency
+TOP_K = 5
+MAX_CHARS = 800
+DB_DIR = Path("rag_db")
+META_FILE = DB_DIR / "metadata.json"
+EMB_FILE = DB_DIR / "embeddings.npy"
+REFRESH_DB = False  # Set to True to force refetch of data
+
 
 # Create a persistent cache directory
 memory = Memory("cache/backtest", verbose=0, compress=1)  # compress=1 for smaller files
@@ -65,6 +83,153 @@ logging.basicConfig(
 )
 
 # ===== Helpers =====
+def ollama_embed(texts: List[str]) -> np.ndarray:
+    embeddings = []
+    for text in texts:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/embeddings",
+            json={"model": EMBED_MODEL, "prompt": text},
+        )
+        resp.raise_for_status()
+        embeddings.append(resp.json()["embedding"])
+    return np.array(embeddings)
+
+def ollama_generate(prompt: str) -> str:
+    resp = requests.post(
+        f"{OLLAMA_URL}/api/generate",
+        json={
+            "model": LLM_MODEL,
+            "prompt": prompt,
+            "temperature": 0,
+            "max_tokens": 256,
+            "num_predict": 256,
+            "options": {
+                 "num_predict": 256
+            },
+            "stream": False
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()["response"]
+
+def fetch_stock_data(ticker: str) -> str:
+    stock = yf.Ticker(ticker)
+    info = stock.info
+    return f"""
+Ticker: {ticker}
+Company: {info.get("longName")}
+Sector: {info.get("sector")}
+Market Cap: {info.get("marketCap")}
+PE Ratio: {info.get("trailingPE")}
+52W High: {info.get("fiftyTwoWeekHigh")}
+52W Low: {info.get("fiftyTwoWeekLow")}
+Business Summary:
+{info.get("longBusinessSummary")}
+""".strip()
+
+def fetch_news_yahoo(ticker: str, max_items=5) -> List[str]:
+    url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+    feed = feedparser.parse(url)
+    articles = []
+    for e in feed.entries[:max_items]:
+        articles.append(f"""
+Title: {e.title}
+Published: {e.published}
+Summary: {e.summary}
+""".strip())
+    return articles
+
+def chunk_text(text: str, max_chars=MAX_CHARS) -> List[str]:
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
+
+class PersistentVectorStore:
+    def __init__(self):
+        self.texts: List[Dict] = []
+        self.embeddings: np.ndarray = None
+
+    def load(self):
+        if META_FILE.exists() and EMB_FILE.exists():
+            with open(META_FILE, "r") as f:
+                self.texts = json.load(f)
+            self.embeddings = np.load(EMB_FILE)
+            logging.info(f"Loaded {len(self.texts)} chunks from disk")
+            return True
+        return False
+
+    def save(self):
+        DB_DIR.mkdir(exist_ok=True)
+        with open(META_FILE, "w") as f:
+            json.dump(self.texts, f, indent=2)
+        np.save(EMB_FILE, self.embeddings)
+
+    def add(self, records: List[Dict]):
+        texts = [r["text"] for r in records]
+        new_embs = ollama_embed(texts)
+        if self.embeddings is None:
+            self.embeddings = new_embs
+        else:
+            self.embeddings = np.vstack([self.embeddings, new_embs])
+        self.texts.extend(records)
+
+    def has_ticker(self, ticker: str) -> bool:
+        return any(r["ticker"] == ticker for r in self.texts)
+
+    def search(self, query: str, k=TOP_K):
+        q_emb = ollama_embed([query])
+        sims = cosine_similarity(q_emb, self.embeddings)[0]
+        idxs = sims.argsort()[-k:][::-1]
+        return [(self.texts[i], sims[i]) for i in idxs]
+
+def build_or_load_index(tickers: List[str]) -> PersistentVectorStore:
+    store = PersistentVectorStore()
+    if not REFRESH_DB and store.load():
+        return store
+    for ticker in tickers:
+        if store.has_ticker(ticker):
+            logging.info(f"Skipping {ticker}, already indexed")
+            continue
+        logging.info(f"Fetching {ticker} data...")
+        records = []
+        # Fundamentals
+        for chunk in chunk_text(fetch_stock_data(ticker)):
+            records.append({
+                "ticker": ticker,
+                "type": "fundamentals",
+                "text": chunk,
+            })
+        # News
+        for article in fetch_news_yahoo(ticker):
+            for chunk in chunk_text(article):
+                records.append({
+                    "ticker": ticker,
+                    "type": "news",
+                    "text": chunk,
+                })
+        store.add(records)
+    store.save()
+    logging.info("DB saved to disk")
+    return store
+
+
+def rag_query(store: PersistentVectorStore, question: str) -> str:
+    hits = store.search(question, TOP_K)
+    context = "\n\n".join(
+        f"[{h['ticker']} | {h['type']}]\n{h['text']}"
+        for h, _ in hits
+    )
+    prompt = f"""
+You are a financial research assistant.
+Answer using only the context below.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+    return ollama_generate(prompt)
 
 def today_str() -> str:
     return date.today().isoformat()
@@ -422,46 +587,19 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         except Exception:
             return flask_jsonify({'error': 'invalid json'}), 400
         prompt = (data.get('message') or '').strip()
-        prompt = "Answer in less than 100 words about the following message. Do not give any disclaimers etc. Following is the message: " + prompt
         if not prompt:
             return flask_jsonify({'error': 'message required'}), 400
+        
+        # Get store from Flask app
+        store = current_app.store
 
-        payload = {
-            "model": "gemma2:2b",
-            "prompt": prompt,
-            "temperature": 0,
-            "max_tokens": 128,
-            "num_predict": 128,
-            "options": {
-                 "num_predict": 128
-            },
-            "stream": False
-        }
         try:
-            resp = requests.post(OLLAMA_URL, json=payload, timeout=60)
-            #print(prompt)
-            #print(resp)
+            reply = rag_query(store, prompt)
         except Exception as e:
-            app.server.logger.exception("Error calling Ollama")
-            return flask_jsonify({'error': 'failed to reach Ollama', 'details': str(e)}), 502
-
-        if resp.status_code != 200:
-            return flask_jsonify({'error': 'ollama error', 'details': resp.text}), 502
-
-        try:
-            jr = resp.json()
-        except Exception:
-            return flask_jsonify({'reply': resp.text})
-
-        # Extract common response forms
-        reply = ''
-        reply = jr['response']
-
-        reply = (reply or '').strip()
-        if not reply:
-            reply = str(jr)
+            current_app.logger.exception("Error in RAG query")
+            return flask_jsonify({'error': 'failed to process query', 'details': str(e)}), 502
+        
         return flask_jsonify({'reply': reply})
-
 
     
     def build_summaries(df: pd.DataFrame):
@@ -870,7 +1008,8 @@ def main():
     args = parse_args()
     tickers = open("tickers.txt").readlines()
     tickers = [x.strip() for x in tickers]
-    
+    store = build_or_load_index(tickers)
+
     data_map, benchmark_data = {}, {}
     for etf in BENCHMARK_ETFS:
         df = sync_ticker(etf, args.start, args.aflag, args.skip_download)
@@ -898,6 +1037,8 @@ def main():
     backtest_results.to_csv(output_path, index=False)
     benchmark_columns = [f"{etf}_return" for etf in BENCHMARK_ETFS]
     app = create_dashboard(backtest_results, benchmark_columns, data_map, benchmark_data, strategies, default_top_n=args.top, default_months_back=args.months)
+    app.server.store = store
+
     if app:
         app.run(debug=False, port=args.port)
 
