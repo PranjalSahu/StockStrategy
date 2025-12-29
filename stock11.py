@@ -5,7 +5,15 @@ Dark-themed Momentum Trading Dashboard with "Top Picks Today"
 - Top Picks now displayed horizontally in one line
 """
 
+# === INSERT: Add these near the top with the other imports ===
+import requests
+import json
+from flask import request as flask_request, jsonify as flask_jsonify
 import os
+
+# Environment-configured Ollama URL (adjust if your Ollama host/port/path differs)
+OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434/api/generate')
+
 import sys
 import logging
 from datetime import date, timedelta
@@ -405,7 +413,57 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
     if backtest_results.empty:
         return None
     app = dash.Dash(__name__, suppress_callback_exceptions=True)
+    
 
+    @app.server.route('/api/chat', methods=['POST'])
+    def _chat_api():
+        try:
+            data = flask_request.get_json(force=True)
+        except Exception:
+            return flask_jsonify({'error': 'invalid json'}), 400
+        prompt = (data.get('message') or '').strip()
+        prompt = "Answer in less than 100 words about the following message. Do not give any disclaimers etc. Following is the message: " + prompt
+        if not prompt:
+            return flask_jsonify({'error': 'message required'}), 400
+
+        payload = {
+            "model": "gemma2:2b",
+            "prompt": prompt,
+            "temperature": 0,
+            "max_tokens": 128,
+            "num_predict": 128,
+            "options": {
+                 "num_predict": 128
+            },
+            "stream": False
+        }
+        try:
+            resp = requests.post(OLLAMA_URL, json=payload, timeout=60)
+            #print(prompt)
+            #print(resp)
+        except Exception as e:
+            app.server.logger.exception("Error calling Ollama")
+            return flask_jsonify({'error': 'failed to reach Ollama', 'details': str(e)}), 502
+
+        if resp.status_code != 200:
+            return flask_jsonify({'error': 'ollama error', 'details': resp.text}), 502
+
+        try:
+            jr = resp.json()
+        except Exception:
+            return flask_jsonify({'reply': resp.text})
+
+        # Extract common response forms
+        reply = ''
+        reply = jr['response']
+
+        reply = (reply or '').strip()
+        if not reply:
+            reply = str(jr)
+        return flask_jsonify({'reply': reply})
+
+
+    
     def build_summaries(df: pd.DataFrame):
         agg = {
             'mean_return': 'mean', 'count_gt_10': 'sum', 'count_gt_5': 'sum', 'count_gt_0': 'sum', 'count_total': 'sum',
@@ -480,6 +538,22 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
 
     store_initial = backtest_results.to_json(date_format='iso', orient='split')
     initial_top, initial_date = compute_top_picks(backtest_results)
+
+    # --- Replace previous chatbot_div with this version that uses dcc.Input ---
+    chatbot_div = html.Div([
+        html.Button('Chat', id='chatbot-toggle', n_clicks=0, **{'aria-controls': 'chatbot-panel', 'aria-expanded': 'false'}),
+        html.Div(id='chatbot-panel', children=[
+            html.Div(id='chatbot-header', children=[
+                html.Strong('Assistant'),
+                html.Button('✕', id='chatbot-close', **{'aria-label': 'Close chat'})
+            ]),
+            html.Div(id='chatbot-messages'),
+            html.Form(id='chatbot-form', children=[
+                dcc.Input(id='chatbot-input', type='text', placeholder='Ask me about the site or stocks...'),
+                html.Button('Send', type='submit')
+            ])
+        ])
+    ], id='site-chatbot')
 
     app.layout = html.Div(className='app', children=[
         html.Div(className='navbar', children=[
@@ -556,7 +630,8 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                     html.Div(className='chip ' + ('success' if bench_summary.get('QQQ',0)>0 else 'danger'), children=[html.Strong('QQQ'), html.Span(f"{bench_summary.get('QQQ',0):.2f}%")]),
                     html.Div(className='chip ' + ('success' if bench_summary.get('VTI',0)>0 else 'danger'), children=[html.Strong('VTI'), html.Span(f"{bench_summary.get('VTI',0):.2f}%")]),
                 ])
-            ])
+            ]),
+            chatbot_div
         ])
     ])
 
@@ -772,6 +847,8 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
             html.Tbody(rows)
         ], style={'width': '100%', 'borderCollapse': 'collapse'})    
         return table
+
+
     
     return app
 
