@@ -1,137 +1,136 @@
-// assets/chatbot.js
-// Robust chatbot frontend using document-level handlers so it survives Dash re-renders.
+// Wait for DOM to be ready
+window.addEventListener('DOMContentLoaded', function() {
+    console.log('Chatbot script loaded');
+    
+    // Wait a bit for Dash to finish rendering
+    setTimeout(() => {
+        const toggle = document.getElementById('chatbot-toggle');
+        const panel = document.getElementById('chatbot-panel');
+        const close = document.getElementById('chatbot-close');
+        const form = document.getElementById('chatbot-form');
+        const input = document.getElementById('chatbot-input');
+        const messages = document.getElementById('chatbot-messages');
+        const sendBtn = document.getElementById('chatbot-send');
 
-(function () {
-  // helper to get element by id safely (may be re-created by Dash)
-  function el(id) { return document.getElementById(id); }
+        if (!toggle || !panel || !close || !form || !input || !messages || !sendBtn) {
+            console.error('Chatbot elements not found:', {
+                toggle: !!toggle,
+                panel: !!panel,
+                close: !!close,
+                form: !!form,
+                input: !!input,
+                messages: !!messages,
+                sendBtn: !!sendBtn
+            });
+            return;
+        }
 
-  function appendMessage(text, cls) {
-    const messages = el('chatbot-messages');
-    if (!messages) return null;
-    const item = document.createElement('div');
-    item.className = 'chatbot-msg ' + cls;
-    item.textContent = text;
-    messages.appendChild(item);
-    messages.scrollTop = messages.scrollHeight;
-    return item;
-  }
+        console.log('All chatbot elements found');
 
-  async function sendMessageToServer(message) {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message })
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(txt || 'Server error');
-    }
-    return res.json();
-  }
+        // Toggle chatbot panel
+        toggle.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('Toggle clicked');
+            if (panel.style.display === 'flex') {
+                panel.style.display = 'none';
+            } else {
+                panel.style.display = 'flex';
+            }
+        });
 
-  async function submitMessage() {
-    const input = el('chatbot-input');
-    if (!input) return;
-    const text = input.value.trim();
-    if (!text) return;
-    appendMessage(text, 'user');
-    input.value = '';
-    const loading = appendMessage('...', 'assistant');
-    try {
-      const data = await sendMessageToServer(text);
-      if (loading) loading.textContent = data.reply || data.result || 'No response';
-    } catch (err) {
-      if (loading) loading.textContent = 'Error: ' + (err.message || err);
-    }
-  }
+        // Close chatbot panel
+        close.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('Close clicked');
+            panel.style.display = 'none';
+        });
 
-  function openPanel() {
-    const panel = el('chatbot-panel');
-    const input = el('chatbot-input');
-    if (!panel) return;
-    panel.style.display = 'flex';
-    const toggle = el('chatbot-toggle');
-    if (toggle) toggle.setAttribute('aria-expanded', 'true');
-    panel.setAttribute('aria-hidden', 'false');
-    if (input) input.focus();
-  }
+        // Handle send button click
+        const sendMessage = async () => {
+            console.log('Send message triggered');
+            
+            const message = input.value.trim();
+            if (!message) return;
 
-  function closePanel() {
-    const panel = el('chatbot-panel');
-    if (!panel) return;
-    panel.style.display = 'none';
-    const toggle = el('chatbot-toggle');
-    if (toggle) toggle.setAttribute('aria-expanded', 'false');
-    panel.setAttribute('aria-hidden', 'true');
-  }
+            // Add user message
+            const userDiv = document.createElement('div');
+            userDiv.className = 'chat-message user';
+            userDiv.textContent = message;
+            messages.appendChild(userDiv);
+            
+            input.value = '';
+            messages.scrollTop = messages.scrollHeight;
 
-  // Document-level click handler (event delegation)
-  document.addEventListener('click', function (ev) {
-    const tgt = ev.target;
+            // Add assistant message container
+            const assistantDiv = document.createElement('div');
+            assistantDiv.className = 'chat-message assistant';
+            assistantDiv.textContent = '';
+            messages.appendChild(assistantDiv);
 
-    if (tgt.closest && tgt.closest('#chatbot-toggle')) {
-      ev.preventDefault();
-      const panel = el('chatbot-panel');
-      if (panel && panel.style.display === 'flex') closePanel(); else openPanel();
-      return;
-    }
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ message: message })
+                });
 
-    if (tgt.closest && tgt.closest('#chatbot-close')) {
-      ev.preventDefault();
-      closePanel();
-      return;
-    }
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
 
-    if (tgt.closest && tgt.closest('#chatbot-send')) {
-      ev.preventDefault();
-      submitMessage();
-      return;
-    }
-  }, true);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
 
-  // Enter key when the input is focused (redundant guard)
-  document.addEventListener('keydown', function (ev) {
-    if (ev.key === 'Enter') {
-      const active = document.activeElement;
-      if (active && active.id === 'chatbot-input') {
-        ev.preventDefault();
-        submitMessage();
-      }
-    }
-  }, true);
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-  // New: Prevent native form submit that may POST/GET to server and cause 405
-  document.addEventListener('submit', function (ev) {
-    try {
-      const form = ev.target;
-      if (!form) return;
-      // If this form contains our chatbot input, intercept it
-      const input = el('chatbot-input');
-      if (input && form.contains(input)) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        // Use our JS submit (which performs a POST fetch)
-        submitMessage();
-      }
-    } catch (e) {
-      // swallow errors to avoid interfering with other forms
-      console.warn('chatbot submit handler error', e);
-    }
-  }, true);
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
 
-  // Try to show an initial greeting when messages area is available
-  function tryGreeting() {
-    const messages = el('chatbot-messages');
-    if (messages && messages.children.length === 0) {
-      appendMessage('Hi — ask me anything about the site or stock strategies.', 'assistant');
-    }
-  }
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '[DONE]') break;
+                            
+                            try {
+                                const parsed = JSON.parse(data);
+                                if (parsed.chunk) {
+                                    assistantDiv.textContent += parsed.chunk;
+                                    messages.scrollTop = messages.scrollHeight;
+                                } else if (parsed.error) {
+                                    assistantDiv.textContent = 'Error: ' + parsed.error;
+                                }
+                            } catch (e) {
+                                // Skip invalid JSON
+                                console.error('JSON parse error:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Fetch error:', error);
+                assistantDiv.textContent = 'Error: ' + error.message;
+            }
+        };
 
-  // If Dash re-renders and replaces nodes later, this will attempt greeting again
-  document.addEventListener('DOMContentLoaded', function () {
-    setTimeout(tryGreeting, 200);
-  });
+        // Send on button click
+        sendBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            sendMessage();
+        });
 
-  // Ensure greeting if assets load after DOMContentLoaded
-  setTimeout(tryGreeting, 500);
-})();
+        // Send on Enter key
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+    }, 500); // Wait 500ms for Dash to render
+});
