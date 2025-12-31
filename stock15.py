@@ -4,7 +4,7 @@ Dark-themed Momentum Trading Dashboard with "Top Picks Today"
 - Top picks are derived from the latest backtest window for the best-performing strategy
 - Top Picks now displayed horizontally in one line
 """
-
+import time
 import feedparser
 from sklearn.metrics.pairwise import cosine_similarity
 from pathlib import Path
@@ -83,20 +83,35 @@ logging.basicConfig(
     ],
 )
 
-# ===== Helpers =====
+# ===== Optional: Add timing to the RAG embedding function =====
 def ollama_embed(texts: List[str]) -> np.ndarray:
+    """Embed texts with timing"""
+    start = time.time()
     embeddings = []
-    for text in texts:
+    for i, text in enumerate(texts):
+        text_start = time.time()
         resp = requests.post(
             f"{OLLAMA_URL}/api/embeddings",
             json={"model": EMBED_MODEL, "prompt": text},
         )
         resp.raise_for_status()
         embeddings.append(resp.json()["embedding"])
+        
+        if len(texts) > 10 and i % 10 == 0:  # Log every 10 items for large batches
+            logging.info(f"   Embedded {i+1}/{len(texts)} texts ({time.time()-text_start:.3f}s)")
+    
+    total_time = time.time() - start
+    if len(texts) > 1:
+        logging.info(f"⏱️  Batch Embedding Time: {total_time:.3f}s for {len(texts)} texts ({total_time/len(texts):.3f}s per text)")
+    
     return np.array(embeddings)
 
 def ollama_generate_stream(prompt: str):
-    """Streaming version - yields chunks of text"""
+    """Streaming version - yields chunks of text with timing"""
+    start_time = time.time()
+    first_token_time = None
+    total_tokens = 0
+    
     resp = requests.post(
         f"{OLLAMA_URL}/api/generate",
         json={
@@ -117,7 +132,25 @@ def ollama_generate_stream(prompt: str):
         if line:
             json_response = json.loads(line)
             if "response" in json_response:
+                if first_token_time is None:
+                    first_token_time = time.time()
+                    ttft = first_token_time - start_time
+                    logging.info(f"⏱️  Time to First Token (TTFT): {ttft:.3f}s")
+                
+                total_tokens += 1
                 yield json_response["response"]
+    
+    end_time = time.time()
+    total_time = end_time - start_time
+    
+    if total_tokens > 0:
+        tokens_per_sec = total_tokens / total_time
+        logging.info(f"⏱️  Generation Complete:")
+        logging.info(f"   - Total Time: {total_time:.3f}s")
+        logging.info(f"   - Total Tokens: {total_tokens}")
+        logging.info(f"   - Tokens/sec: {tokens_per_sec:.2f}")
+        if first_token_time:
+            logging.info(f"   - Generation Time (after first token): {end_time - first_token_time:.3f}s")
 
 def ollama_generate(prompt: str) -> str:
     """Non-streaming version - kept for backward compatibility"""
@@ -608,6 +641,8 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
 
     @app.server.route('/api/chat', methods=['POST'])
     def _chat_api():
+        request_start = time.time()
+        
         try:
             data = flask_request.get_json(force=True)
         except Exception:
@@ -617,40 +652,65 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         if not prompt:
             return flask_jsonify({'error': 'message required'}), 400
         
+        logging.info(f"📩 Received chat query: {prompt[:100]}...")
+        
         store = current_app.store
 
-        # Build RAG context
+        # RAG query with timing
+        rag_start = time.time()
         try:
             hits = store.search(prompt, TOP_K)
+            rag_end = time.time()
+            rag_time = rag_end - rag_start
+            
+            logging.info(f"⏱️  RAG Search Time: {rag_time:.3f}s")
+            logging.info(f"   - Found {len(hits)} relevant chunks")
+            
             context = "\n\n".join(
                 f"[{h['ticker']} | {h['type']}]\n{h['text']}"
                 for h, _ in hits
             )
+            
             full_prompt = f"""
-    You are a financial research assistant.
-    Answer using only the context below.
+        You are a financial research assistant.
+        Answer using only the context below.
 
-    Context:
-    {context}
+        Context:
+        {context}
 
-    Question:
-    {prompt}
+        Question:
+        {prompt}
 
-    Answer:
-    """
+        Answer:
+        """
+            
+            prompt_prep_time = time.time() - rag_end
+            logging.info(f"⏱️  Prompt Preparation Time: {prompt_prep_time:.3f}s")
+            logging.info(f"   - Prompt Length: {len(full_prompt)} chars")
+            
         except Exception as e:
             current_app.logger.exception("Error in RAG query")
             return flask_jsonify({'error': 'failed to process query', 'details': str(e)}), 502
         
-        # Stream the response
+        # Stream the response with timing
+        generation_start = time.time()
+        
         def generate():
             try:
+                logging.info(f"🚀 Starting Ollama generation...")
                 for chunk in ollama_generate_stream(full_prompt):
                     # Send each chunk as JSON
                     yield f"data: {json.dumps({'chunk': chunk})}\n\n"
             except Exception as e:
+                logging.error(f"❌ Generation error: {str(e)}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
             finally:
+                total_request_time = time.time() - request_start
+                logging.info(f"⏱️  Total Request Time: {total_request_time:.3f}s")
+                logging.info(f"   - RAG: {rag_time:.3f}s ({rag_time/total_request_time*100:.1f}%)")
+                logging.info(f"   - Prompt Prep: {prompt_prep_time:.3f}s ({prompt_prep_time/total_request_time*100:.1f}%)")
+                logging.info(f"   - Generation: {time.time() - generation_start:.3f}s ({(time.time()-generation_start)/total_request_time*100:.1f}%)")
+                logging.info("="*60)
                 yield "data: [DONE]\n\n"
         
         return flask.Response(
@@ -661,7 +721,6 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 'X-Accel-Buffering': 'no'
             }
         )
-
 
     
     def build_summaries(df: pd.DataFrame):
