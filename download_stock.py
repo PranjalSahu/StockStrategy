@@ -1,0 +1,95 @@
+# Code to download the data daily
+import yfinance as yf
+import pandas as pd
+
+tickers = [
+        "AAPL", "ADP", "ADBE", "AMD", "ABNB", "ALNY", "AEP", "AMGN", "ADI", "AMAT",
+        "AMZN", "APP", "ARM", "ASML", "AXON", "AVGO", "BKNG", "CHTR", "CMCSA", "COST",
+        "CSCO", "CDNS", "COPART", "CRWD", "DDOG", "DOCU", "DXCM", "EA", "EXC", "FAST",
+        "FER", "FISV", "GILD", "GOOG", "GOOGL", "HBAN", "HON", "IDXX", "INTC", "INTU",
+        "ISRG", "KDP", "KLAC", "LRCX", "LIND", "MRNA", "META", "MARV", "MRVL", "MSFT",
+        "MU", "MLB", "NTES", "NFLX", "NVDA", "NXPI", "ORLY", "ODFL", "PANW", "PDD",
+        "PAYX", "PYPL", "PEP", "QCOM", "REGN", "ROST", "SBUX", "SE", "SNPS", "SWKS",
+        "SIRI", "TMUS", "TSLA", "TXN", "VRSK", "VRTX", "WBD", "WDAY", "XLNX", "XEL",
+        "ZS", "JPM", "JNJ", "V", "UNH", "XOM", "MA", "PG", "HD", "BAC", "CVX", "VZ",
+        "KO", "ABT", "WMT", "CRM", "TMO", "ACN", "MDT", "NEE", "DHR", "LLY", "MCD",
+        "NKE", "QCOM", "LIN", "UPS", "IBM", "CAT", "SCHW", "AXP", "NOW", "PM", "ORCL",
+        "GE", "T", "BLK", "SPGI", "C", "PLD", "MMM", "LMT", "USB", "BDX", "TGT", "DE",
+        "RTX", "MS", "EL", "SYK", "AMT", "LOW", "GILD", "MO", "CCI", "ISRG", "CL",
+        "ZTS", "CSX", "DUK", "SO", "APD", "ETN", "BDX", "ITW", "BSX", "HUM", "BK",
+        "MMC", "BIIB", "SLB", "PNC", "TJX", "SHW", "EMR", "OKE", "EXC", "ECL", "MCO",
+        "TT", "EW", "HCA", "CME", "SYF", "MTB", "CNC", "TFC", "ES", "CF", "KEY", "STT",
+        "AON", "KMB", "ALL", "SRE", "ELV", "MSI", "NOC", "DOW", "ADM", "F", "AIG",
+        "CNP", "WBA", "CARR", "ROK", "CPRT", "AWK", "A", "HPQ", "KHC", "AEE", 
+        "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "AVGO", "TSLA", "BRK.B",
+        "LLY", "JPM", "WMT", "V", "ORCL", "MA", "XOM", "JNJ", "PLTR", "BAC", "ABBV",
+        "NFLX", "COST", "AMD", "HD", "PG", "GE", "MU", "CSCO", "CVX", "KO", "WFC",
+        "UNH", "MS", "IBM", "CAT", "GS", "AXP", "MRK", "PM", "RTX", "CRM", "APP",
+        "TMUS", "MCD", "LRCX", "C", "ABT", "TMO", "AMAT", "ISRG", "DIS", "LIN",
+        "PEP", "INTU", "QCOM", "GEV", "SCHW", "AMGN", "BKNG", "T", "TJX", "BA",
+        "INTC", "VZ", "UBER", "APH", "KLAC", "ACN", "NEE", "ANET", "DHR", "TXN",
+        "SPGI", "NOW", "COF", "GILD", "ADBE", "PFE", "BSX", "UNP", "LOW", "ADI",
+        "SYK", "PGR", "PANW", "WELL", "DE", "ETN", "MDT", "HON", "CB", "BX",
+        "PLD", "CRWD", "VRTX", "KKR", "COP", "NEM", "CEG", "LMT", "PH", "BMY",
+        "HCA", "CMCSA", "ADP", "MCK", "DASH", "CVS", "CME", "MO", "SO", "SBUX",
+        "GD", "ICE", "MCO", "MMC", "DUK", "SNPS", "WM", "NKE", "TT", "APO",
+        "CDNS", "UPS", "USB", "DELL", "HWM", "MMM", "CRH", "MAR", "PNC", "NOC",
+        "ABNB", "REGN", "BK", "AMT", "RCL", "SHW", "ORLY", "GM", "CTAS", "GLW",
+        "EMR", "AON", "ELV", "MNST", "ECL", "EQIX", "JCI", "FCX", "WMB", "WBD",
+        "CMI", "MDLZ", "FDX", "TEL", "CSX", "HLT", "AJG", "RSG", "COR", "NSC",
+        "TRV", "TFC", "CL", "COIN", "PWR", "ADSK", "MSI", "CVNA", "STX", "SPG",
+        "AEP", "WDC", "KMI", "FTNT", "ROST", "PCAR", "AFL", "SRE", "AZO", "WDAY",
+        "SLB", "EOG", "NXPI", "NDAQ", "LHX", "BDX", "PYPL", "ZTS", "VST", "ALL",
+        "IDXX", "APD", "MET", "DLR", "F", "URI", "PSX", "O", "EA", "D", "CMG",
+        "VLO", "EW", "MPC", "CAH", "CBRE", "GWW", "ROP", "FAST", "AME", "DDOG",
+        "AIG", "AMP", "AXON", "DAL", "TTWO", "OKE", "PSA", "MPWR", "CTVA", "CARR",
+        "ROK", "BKR", "LVS", "MSCI", "EXC", "XEL", "TGT", "YUM", "DHI", "FANG",
+        "ETR", "PAYX", "CCL", "CTSH", "FICO", "PEG", "PRU", "KR", "TRGP", "OXY",
+        "GRMN", "A", "HIG", "VMC", "EL", "MLM", "IQV", "CCI", "EBAY", "GEHC",
+        "KDP", "CPRT", "NUE", "WAB", "VTR", "HSY", "ARES", "UAL", "STT", "FISV",
+        "ED", "RMD", "KEYS", "SYY", "MCHP", "ACGL", "EXPE", "FIS", "PCG", "WEC",
+        "OTIS", "FIX", "XYL", "EQT", "LYV", "KMB", "ODFL", "KVUE", "HPE", "RJF",
+        "IR", "WTW", "FITB", "MTB", "HUM", "TER", "SYF", "NRG", "VRSK", "VICI",
+        "DG", "IBKR", "ROL", "MTD", "FSLR", "CSGP", "KHC", "HBAN", "EME", "ADM",
+        "EXR", "BRO", "DOV", "ATO", "TSCO", "EFX", "AEE", "ULTA", "CHTR", "CBOE",
+        "DTE", "WRB", "TPR", "NTRS", "BR", "DXCM", "LEN", "CINF", "AVB", "BIIB",
+        "FE", "PPL", "CFG", "AWK", "STLD", "VLTO", "OMC", "STE", "JBL", "ES",
+        "GIS", "CNP", "LULU", "TDY", "RF", "STZ", "HUBB", "IRM", "DLTR", "EQR",
+        "LDOS", "HAL", "PPG", "PHM", "EIX", "KEY", "VRSN", "WAT", "TROW", "DVN",
+        "WSM", "L", "ON", "DRI", "RL", "NTAP", "CPAY", "LUV", "HPQ", "CMS",
+        "LH", "PTC", "IP", "TSN", "CHD", "SBAC", "TPL", "EXPD", "PODD", "NVR",
+        "WST", "SW", "PFG", "INCY", "NI", "TYL", "CNC", "CTRA", "CHRW", "DGX",
+        "GPN", "AMCR", "TRMB", "JBHT", "PKG", "MKC", "SNA", "IT", "SMCI", "TTD",
+        "CDW", "ZBH", "FTV", "Q", "GPC", "LII", "PNR", "BG", "ALB", "DD", "TKO",
+        "GDDY", "WY", "IFF", "GEN", "ESS", "LNT", "EVRG", "INVH", "HOLX", "APTV",
+        "DOW", "COO", "MAA", "J", "TXT", "FOXA", "FOX", "FFIV", "PSKY", "ERIE",
+        "DECK", "BBY", "DPZ", "VTRS", "EG", "UHS", "AVY", "BALL", "SOLV", "ALLE",
+        "HII", "KIM", "LYB", "NDSN", "IEX", "JKHY", "MAS", "HRL", "WYNN", "AKAM",
+        "MRNA", "REG", "HST", "BEN", "ZBRA", "BF.B", "CF", "AIZ", "IVZ", "UDR",
+        "CLX", "EPAM", "CPT", "SWK", "GL", "BLDR", "HAS", "ALGN", "DOC", "DAY",
+        "RVTY", "BXP", "FDS", "PNW", "SJM", "NCLH", "MGM", "CRL", "AES", "BAX",
+        "NWSA", "SWKS", "AOS", "TECH", "TAP", "HSIC", "FRT", "PAYC", "APA", "POOL",
+        "MOH", "ARE", "CPB", "GNRC", "CAG", "DVA", "MTCH", "MOS", "LW", "NWS", "VOO", "VTI", "FTEC", "SPY", "QQQ"
+    ]
+tickers = list(set(tickers) - set(['COPART', 'BRK.B', 'MARV', 'WBA', 'XLNX']))
+t = " ".join(tickers)
+s = yf.download(
+    t,
+    start="2019-01-01",
+    group_by=False,
+    auto_adjust=True,
+    threads=True,
+    progress=True
+)
+df = s
+unique_tickers = s.columns.get_level_values('Ticker').unique()
+for ticker in unique_tickers:
+    # Select all columns for this ticker
+    ticker_df = df.xs(ticker, level='Ticker', axis=1)
+    # Optional: Reset the index to make 'Date' a regular column (highly recommended for CSV readability)
+    ticker_df = ticker_df.reset_index().rename(columns={'Date': 'Date'} if 'Date' in ticker_df.index.name else {})
+    # Define filename (you can change the naming convention or add a folder)
+    filename = f"C:\\Users\\Pranjal\\Downloads\\data\\{ticker}.csv"  # e.g., MCHP.csv, PLTR.csv, etc.
+    # Save to CSV without the pandas multi-index residue
+    ticker_df.to_csv(filename, index=False)
+    print(f"Saved {filename} with shape {ticker_df.shape}")
