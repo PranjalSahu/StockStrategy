@@ -6,7 +6,7 @@ Dark-themed Momentum Trading Dashboard with "Top Picks Today"
 """
 import time
 import feedparser
-from sklearn.metrics.pairwise import cosine_similarity
+import chromadb
 from pathlib import Path
 from typing import List, Dict
 from flask import current_app
@@ -38,11 +38,9 @@ EMBED_MODEL = "nomic-embed-text"
 LLM_MODEL = "gemma3:1b"#"smollm:135m"#"gemma3:1b"#"gemma2:2b"  # Already used in chat, but defined here for consistency
 TOP_K = 5
 MAX_CHARS = 800
-DB_DIR = Path("rag_db")
-META_FILE = DB_DIR / "metadata.json"
-EMB_FILE = DB_DIR / "embeddings.npy"
-REFRESH_DB = False  # Set to True to force refetch of data
 
+CHROMA_DB_PATH = "./chroma_db"
+REFRESH_DB = False
 
 # Create a persistent cache directory
 memory = Memory("cache/backtest", verbose=0, compress=1)  # compress=1 for smaller files
@@ -137,7 +135,7 @@ def ollama_generate_stream(prompt: str):
                 if first_token_time is None:
                     first_token_time = time.time()
                     ttft = first_token_time - start_time
-                    logging.info(f"⏱️  Time to First Token (TTFT): {ttft:.3f}s")
+                    logging.info(f"Time to First Token (TTFT): {ttft:.3f}s")
                 
                 total_tokens += 1
                 yield json_response["response"]
@@ -147,10 +145,10 @@ def ollama_generate_stream(prompt: str):
     
     if total_tokens > 0:
         tokens_per_sec = total_tokens / total_time
-        logging.info(f"⏱️  Generation Complete:")
-        logging.info(f"   - Total Time: {total_time:.3f}s")
-        logging.info(f"   - Total Tokens: {total_tokens}")
-        logging.info(f"   - Tokens/sec: {tokens_per_sec:.2f}")
+        logging.info(f"Generation Complete:")
+        logging.info(f"Total Time: {total_time:.3f}s")
+        logging.info(f"Total Tokens: {total_tokens}")
+        logging.info(f"Tokens/sec: {tokens_per_sec:.2f}")
         if first_token_time:
             logging.info(f"   - Generation Time (after first token): {end_time - first_token_time:.3f}s")
 
@@ -203,84 +201,120 @@ Summary: {e.summary}
 def chunk_text(text: str, max_chars=MAX_CHARS) -> List[str]:
     return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
-class PersistentVectorStore:
-    def __init__(self):
-        self.texts: List[Dict] = []
-        self.embeddings: np.ndarray = None
+def content_hash(text: str) -> str:
+    """Generate hash for deduplication"""
+    import hashlib
+    return hashlib.md5(text.encode()).hexdigest()
 
-    def load(self):
-        if META_FILE.exists() and EMB_FILE.exists():
-            with open(META_FILE, "r") as f:
-                self.texts = json.load(f)
-            self.embeddings = np.load(EMB_FILE)
-            logging.info(f"Loaded {len(self.texts)} chunks from disk")
-            return True
-        return False
-
-    def save(self):
-        DB_DIR.mkdir(exist_ok=True)
-        with open(META_FILE, "w") as f:
-            json.dump(self.texts, f, indent=2)
-        np.save(EMB_FILE, self.embeddings)
-
-    def add(self, records: List[Dict]):
-        texts = [r["text"] for r in records]
-        new_embs = ollama_embed(texts)
-        if self.embeddings is None:
-            self.embeddings = new_embs
-        else:
-            self.embeddings = np.vstack([self.embeddings, new_embs])
-        self.texts.extend(records)
-
-    def has_ticker(self, ticker: str) -> bool:
-        return any(r["ticker"] == ticker for r in self.texts)
-
-    def search(self, query: str, k=TOP_K):
-        q_emb = ollama_embed([query])
-        sims = cosine_similarity(q_emb, self.embeddings)[0]
-        idxs = sims.argsort()[-k:][::-1]
-        return [(self.texts[i], sims[i]) for i in idxs]
-
-def build_or_load_index(tickers: List[str]) -> PersistentVectorStore:
-    store = PersistentVectorStore()
-    if not REFRESH_DB and store.load():
-        return store
-    for ticker in tickers:
-        if store.has_ticker(ticker):
-            logging.info(f"Skipping {ticker}, already indexed")
-            continue
-        logging.info(f"Fetching {ticker} data...")
-        records = []
-        # Fundamentals
-        for chunk in chunk_text(fetch_stock_data(ticker)):
-            records.append({
-                "ticker": ticker,
-                "type": "fundamentals",
-                "text": chunk,
-            })
-        # News
-        for article in fetch_news_yahoo(ticker):
-            for chunk in chunk_text(article):
-                records.append({
-                    "ticker": ticker,
-                    "type": "news",
-                    "text": chunk,
-                })
-        store.add(records)
-    store.save()
-    logging.info("DB saved to disk")
-    return store
-
-
-def rag_query(store: PersistentVectorStore, question: str) -> str:
-    hits = store.search(question, TOP_K)
-    context = "\n\n".join(
-        f"[{h['ticker']} | {h['type']}]\n{h['text']}"
-        for h, _ in hits
+def already_indexed(collection, ticker: str, h: str) -> bool:
+    """Check if document already exists"""
+    results = collection.get(
+        where={
+            "$and": [
+                {"ticker": ticker},
+                {"hash": h}
+            ]
+        },
+        limit=1
     )
+    return len(results["ids"]) > 0
+
+def build_or_load_index(tickers: List[str]):
+    """Build or load ChromaDB index with persistent storage"""
+    # Use PersistentClient for guaranteed persistence
+    chroma_client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    
+    collection = chroma_client.get_or_create_collection(
+        name="stocks_rag"
+    )
+    
+    # Check if we already have data (unless forcing refresh)
+    existing_count = len(collection.get()["ids"])
+    if not REFRESH_DB and existing_count > 0:
+        logging.info(f"Loaded existing ChromaDB with {existing_count} documents")
+        return collection
+    
+    # Index each ticker
+    for ticker in tickers:
+        logging.info(f"Fetching {ticker} data...")
+        
+        # Fundamentals
+        try:
+            fundamentals_text = fetch_stock_data(ticker)
+            for chunk in chunk_text(fundamentals_text):
+                h = content_hash(chunk)
+                if already_indexed(collection, ticker, h):
+                    continue
+                    
+                embedding = ollama_embed([chunk])[0]
+                doc_id = f"{ticker}_fundamentals_{h}"
+                collection.add(
+                    documents=[chunk],
+                    embeddings=[embedding],
+                    ids=[doc_id],
+                    metadatas=[{
+                        "ticker": ticker,
+                        "type": "fundamentals",
+                        "hash": h
+                    }]
+                )
+        except Exception as e:
+            logging.warning(f"Failed to fetch fundamentals for {ticker}: {e}")
+        
+        # News
+        try:
+            for article in fetch_news_yahoo(ticker):
+                for chunk in chunk_text(article):
+                    h = content_hash(chunk)
+                    if already_indexed(collection, ticker, h):
+                        continue
+                        
+                    embedding = ollama_embed([chunk])[0]
+                    doc_id = f"{ticker}_news_{h}"
+                    collection.add(
+                        documents=[chunk],
+                        embeddings=[embedding],
+                        ids=[doc_id],
+                        metadatas=[{
+                            "ticker": ticker,
+                            "type": "news",
+                            "hash": h
+                        }]
+                    )
+        except Exception as e:
+            logging.warning(f"Failed to fetch news for {ticker}: {e}")
+    
+    total_docs = len(collection.get()["ids"])
+    logging.info(f"ChromaDB ready with {total_docs} documents")
+    return collection
+
+
+def rag_query(collection, question: str) -> str:
+    """Query ChromaDB and generate response"""
+    # Embed the question
+    q_emb = ollama_embed([question])[0]
+    
+    # Check if collection has documents
+    total_docs = len(collection.get()["ids"])
+    if total_docs == 0:
+        return "Vector DB is empty. Please wait until indexing completes."
+    
+    # Query ChromaDB
+    results = collection.query(
+        query_embeddings=[q_emb],
+        n_results=TOP_K
+    )
+    
+    # Build context from results
+    context = "\n\n".join(
+        f"[{m['ticker']} | {m['type']}]\n{doc}"
+        for doc, m in zip(results["documents"][0], results["metadatas"][0])
+    )
+    
+    # Generate response
     prompt = f"""
 You are a financial research assistant.
-Answer using only the context below.
+Answer using only the context below. Keep responses short and concise.
 
 Context:
 {context}
@@ -290,6 +324,7 @@ Question:
 
 Answer:
 """
+    print("context is ", context)
     return ollama_generate(prompt)
 
 def today_str() -> str:
@@ -655,23 +690,31 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         if not prompt:
             return flask_jsonify({'error': 'message required'}), 400
         
-        logging.info(f"📩 Received chat query: {prompt[:100]}...")
+        logging.info(f"Received chat query: {prompt[:100]}...")
         
-        store = current_app.store
+        collection = current_app.collection
 
         # RAG query with timing
         rag_start = time.time()
         try:
-            hits = store.search(prompt, TOP_K)
+            # Embed the question
+            q_emb = ollama_embed([prompt])[0]
+            
+            # Query ChromaDB
+            results = collection.query(
+                query_embeddings=[q_emb],
+                n_results=TOP_K
+            )
+            
             rag_end = time.time()
             rag_time = rag_end - rag_start
             
-            logging.info(f"⏱️  RAG Search Time: {rag_time:.3f}s")
-            logging.info(f"   - Found {len(hits)} relevant chunks")
+            logging.info(f"RAG Search Time: {rag_time:.3f}s")
+            logging.info(f"   - Found {len(results['documents'][0])} relevant chunks")
             
             context = "\n\n".join(
-                f"[{h['ticker']} | {h['type']}]\n{h['text']}"
-                for h, _ in hits
+                f"[{m['ticker']} | {m['type']}]\n{doc}"
+                for doc, m in zip(results["documents"][0], results["metadatas"][0])
             )
             
             full_prompt = f"""
@@ -688,8 +731,8 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         """
             
             prompt_prep_time = time.time() - rag_end
-            logging.info(f"⏱️  Prompt Preparation Time: {prompt_prep_time:.3f}s")
-            logging.info(f"   - Prompt Length: {len(full_prompt)} chars")
+            logging.info(f"Prompt Preparation Time: {prompt_prep_time:.3f}s")
+            logging.info(f"Prompt Length: {len(full_prompt)} chars")
             
         except Exception as e:
             current_app.logger.exception("Error in RAG query")
@@ -700,19 +743,19 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         
         def generate():
             try:
-                logging.info(f"🚀 Starting Ollama generation...")
+                logging.info(f"Starting Ollama generation...")
                 for chunk in ollama_generate_stream(full_prompt):
                     # Send each chunk as JSON
                     yield f"data: {json.dumps({'chunk': chunk})}\n\n"
             except Exception as e:
-                logging.error(f"❌ Generation error: {str(e)}")
+                logging.error(f"Generation error: {str(e)}")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
             finally:
                 total_request_time = time.time() - request_start
-                logging.info(f"⏱️  Total Request Time: {total_request_time:.3f}s")
-                logging.info(f"   - RAG: {rag_time:.3f}s ({rag_time/total_request_time*100:.1f}%)")
-                logging.info(f"   - Prompt Prep: {prompt_prep_time:.3f}s ({prompt_prep_time/total_request_time*100:.1f}%)")
-                logging.info(f"   - Generation: {time.time() - generation_start:.3f}s ({(time.time()-generation_start)/total_request_time*100:.1f}%)")
+                logging.info(f"Total Request Time: {total_request_time:.3f}s")
+                logging.info(f"RAG: {rag_time:.3f}s ({rag_time/total_request_time*100:.1f}%)")
+                logging.info(f"Prompt Prep: {prompt_prep_time:.3f}s ({prompt_prep_time/total_request_time*100:.1f}%)")
+                logging.info(f"Generation: {time.time() - generation_start:.3f}s ({(time.time()-generation_start)/total_request_time*100:.1f}%)")
                 logging.info("="*60)
                 yield "data: [DONE]\n\n"
         
@@ -1606,7 +1649,7 @@ def main():
     args = parse_args()
     tickers = open("tickers.txt").readlines()
     tickers = [x.strip() for x in tickers]
-    store = build_or_load_index(tickers)
+    collection = build_or_load_index(tickers)
 
     data_map, benchmark_data = {}, {}
     for etf in BENCHMARK_ETFS:
@@ -1635,7 +1678,7 @@ def main():
     backtest_results.to_csv(output_path, index=False)
     benchmark_columns = [f"{etf}_return" for etf in BENCHMARK_ETFS]
     app = create_dashboard(backtest_results, benchmark_columns, data_map, benchmark_data, strategies, default_top_n=args.top, default_months_back=args.months)
-    app.server.store = store
+    app.server.collection = collection
 
     if app:
         app.run(debug=False, port=args.port)
