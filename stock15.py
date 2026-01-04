@@ -288,6 +288,10 @@ def build_or_load_index(tickers: List[str]):
     logging.info(f"ChromaDB ready with {total_docs} documents")
     return collection
 
+def get_chart_height():
+    """Return appropriate chart height based on screen size"""
+    return 300  # Mobile default, can be dynamically set with clientside callback
+
 
 def rag_query(collection, question: str) -> str:
     """Query ChromaDB and generate response"""
@@ -304,6 +308,10 @@ def rag_query(collection, question: str) -> str:
         query_embeddings=[q_emb],
         n_results=TOP_K
     )
+    
+    for r in results:
+        print(r)
+        print("="*10)
     
     # Build context from results
     context = "\n\n".join(
@@ -717,6 +725,8 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 for doc, m in zip(results["documents"][0], results["metadatas"][0])
             )
             
+            print("context is ", context)
+
             full_prompt = f"""
         You are a financial research assistant.
         Answer using only the context below.
@@ -938,7 +948,12 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                     html.Div(className='controls-row', children=[
                         html.Div(children=[html.Label('Backtest Months', htmlFor='input-months', className='label'), dcc.Input(id='input-months', type='number', min=1, max=24, value=default_months_back, className='input')]),
                         html.Div(children=[html.Label('Top N stocks', htmlFor='input-topn', className='label'), dcc.Input(id='input-topn', type='number', min=1, max=100, value=default_top_n, className='input')]),
-                        dcc.Loading(id='loading-rerun', type='default', children=html.Div(id='run-status', className='status'))
+                        dcc.Loading(
+                            id='loading-rerun',
+                            type='circle',  # Better than default on mobile
+                            fullscreen=True,  # Cover entire screen
+                            children=html.Div(id='run-status')
+                        )
                     ])
                 ])
             ]),
@@ -1450,7 +1465,16 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
             strategy_picks = [p['ticker'] for p in picks if p['strategy'] == strategy]
             tab_content = html.Div([
                 html.Div(strategy, style={'fontWeight': 'bold', 'fontSize': '11px', 'marginBottom': '5px', 'color': '#8b949e', 'textTransform': 'uppercase'}),
-                html.Div([html.Span(className='pick-chip', children=ticker) for ticker in strategy_picks], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px', 'marginBottom': '15px'})
+                html.Div([
+                    html.Span(className='pick-chip', children=ticker) 
+                    for ticker in strategy_picks
+                ], style={
+                    'display': 'flex', 
+                    'flexWrap': 'wrap', 
+                    'gap': '8px', 
+                    'marginBottom': '15px',
+                    'justifyContent': 'center'  # Center on mobile
+                })
             ])
             tabs_children.append(dcc.Tab(label=strategy, value=strategy, className='top-picks-tab', selected_className='top-picks-tab--selected', children=tab_content))
         selected_tab = strategies_in_picks[0] if strategies_in_picks else None
@@ -1459,21 +1483,21 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         fig1 = go.Figure([go.Bar(x=strat['strategy'], y=strat['mean_return'],
                              marker_color=['#2ecc71' if x>0 else '#e74c3c' for x in strat['mean_return']],
                              text=strat['mean_return'].round(2), textposition='outside')])
-        fig1.update_layout(title='Average Returns by Strategy', xaxis_title='Strategy', yaxis_title='Average Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=420)
+        fig1.update_layout(title='Average Returns by Strategy', xaxis_title='Strategy', yaxis_title='Average Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=420, autosize=True)
 
         fig2 = go.Figure()
         fig2.add_trace(go.Bar(x=strat['strategy'], y=strat['mean_return'], name='Strategy', marker_color='#58a6ff'))
         for etf in BENCHMARK_ETFS:
             if etf in bench:
                 fig2.add_trace(go.Scatter(x=strat['strategy'], y=[bench[etf]]*len(strat), name=f'{etf} Benchmark', mode='lines', line=dict(width=3, dash='dash')))
-        fig2.update_layout(title='Strategy Returns vs Benchmark ETFs', xaxis_title='Strategy', yaxis_title='Average Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=420)
+        fig2.update_layout(title='Strategy Returns vs Benchmark ETFs', xaxis_title='Strategy', yaxis_title='Average Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=420, autosize=True)
 
         fig3 = go.Figure([
             go.Bar(name='>0%', x=strat['strategy'], y=strat['pct_gt_0'], marker_color='#7ee787'),
             go.Bar(name='>5%', x=strat['strategy'], y=strat['pct_gt_5'], marker_color='#58a6ff'),
             go.Bar(name='>10%', x=strat['strategy'], y=strat['pct_gt_10'], marker_color='#e6cc00')
         ])
-        fig3.update_layout(title='Win Rates by Threshold', xaxis_title='Strategy', yaxis_title='Percentage (%)', barmode='group', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=420)
+        fig3.update_layout(title='Win Rates by Threshold', xaxis_title='Strategy', yaxis_title='Percentage (%)', barmode='group', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=420, autosize=True)
 
         fig4 = go.Figure()
         for sname in df['strategy'].unique():
@@ -1487,7 +1511,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 etf_returns = df[col].dropna()
                 if len(etf_returns) > 0:
                     fig4.add_trace(go.Box(y=etf_returns, name=f'{etf} (Benchmark)', marker_color='orange', boxmean=True))
-        fig4.update_layout(title='Return Distribution by Strategy (vs Benchmarks)', yaxis_title='Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=520)
+        fig4.update_layout(title='Return Distribution by Strategy (vs Benchmarks)', yaxis_title='Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=520, autosize=True)
 
         fig5 = go.Figure()
         for sname in df['strategy'].unique():
@@ -1498,7 +1522,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
             if col in df.columns:
                 sorted_df = df.sort_values('entry_date')
                 fig5.add_trace(go.Scatter(x=sorted_df['entry_date'], y=sorted_df[col], mode='lines', name=f'{etf} Benchmark', line=dict(width=3, dash='dot'), opacity=0.7))
-        fig5.update_layout(title='Rolling 30-Day Performance (vs Benchmarks)', xaxis_title='Entry Date', yaxis_title='Mean Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=520)
+        fig5.update_layout(title='Rolling 30-Day Performance (vs Benchmarks)', xaxis_title='Entry Date', yaxis_title='Mean Return (%)', template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=520, autosize=True)
 
         return strat.round(2).to_dict('records'), fig1, fig2, fig3, fig4, fig5, tabs_children, selected_tab
 
@@ -1521,7 +1545,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                                  marker_color=['#2ecc71' if x>0 else '#e74c3c' for x in strat['mean_return']],
                                  text=strat['mean_return'].round(2), textposition='outside')])
             fig.update_layout(title='Average Returns by Strategy', xaxis_title='Strategy', yaxis_title='Average Return (%)',
-                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=500)
+                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=500, autosize=True)
 
         elif selected_tab == 'benchmark-comparison':
             fig = go.Figure()
@@ -1531,7 +1555,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                     fig.add_trace(go.Scatter(x=strat['strategy'], y=[bench[etf]]*len(strat), name=f'{etf} Benchmark',
                                              mode='lines', line=dict(width=3, dash='dash')))
             fig.update_layout(title='Strategy Returns vs Benchmark ETFs', xaxis_title='Strategy', yaxis_title='Average Return (%)',
-                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=500)
+                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=500, autosize=True)
 
         elif selected_tab == 'win-rate-comparison':
             fig = go.Figure([
@@ -1540,7 +1564,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 go.Bar(name='>10%', x=strat['strategy'], y=strat['pct_gt_10'], marker_color='#e6cc00')
             ])
             fig.update_layout(title='Win Rates by Threshold', xaxis_title='Strategy', yaxis_title='Percentage (%)', barmode='group',
-                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=500)
+                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=500, autosize=True)
 
         elif selected_tab == 'return-distribution':
             fig = go.Figure()
@@ -1556,7 +1580,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                     if etf_returns:
                         fig.add_trace(go.Box(y=etf_returns, name=f'{etf} (Benchmark)', marker_color='orange', boxmean=True))
             fig.update_layout(title='Return Distribution by Strategy (vs Benchmarks)', yaxis_title='Return (%)',
-                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=550)
+                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=550, autosize=True)
 
         elif selected_tab == 'rolling-performance':
             fig = go.Figure()
@@ -1570,7 +1594,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                     fig.add_trace(go.Scatter(x=sorted_df['entry_date'], y=sorted_df[col], mode='lines',
                                              name=f'{etf} Benchmark', line=dict(width=3, dash='dot'), opacity=0.7))
             fig.update_layout(title='Rolling 30-Day Performance (vs Benchmarks)', xaxis_title='Entry Date', yaxis_title='Mean Return (%)',
-                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=550)
+                              template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', height=550, autosize=True)
 
         return dcc.Graph(figure=fig)
 
@@ -1619,10 +1643,20 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 cells.append(html.Td(f"{value:.2f}" if isinstance(value, float) else str(value), style=cell_style))
             rows.append(html.Tr(cells))
         
-        table = html.Table([
-            html.Thead(html.Tr(headers)),
-            html.Tbody(rows)
-        ], style={'width': '100%', 'borderCollapse': 'collapse'})    
+        table = html.Div([
+            html.Table([
+                html.Thead(html.Tr(headers)),
+                html.Tbody(rows)
+            ], style={
+                'width': '100%', 
+                'borderCollapse': 'collapse',
+                'minWidth': '800px'  # Ensures horizontal scroll on mobile
+            })
+        ], style={
+            'overflowX': 'auto',
+            'WebkitOverflowScrolling': 'touch'
+        })
+
         return table
 
 
