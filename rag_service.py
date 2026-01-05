@@ -10,7 +10,7 @@ import chromadb
 # CONFIG
 # ==========================
 OLLAMA_URL = "http://localhost:11434"
-EMBED_MODEL = "nomic-embed-text"
+EMBED_MODEL = "embeddinggemma"#"nomic-embed-text"
 LLM_MODEL = "gemma3:1b"
 
 REFRESH_INTERVAL = 60 * 60  # 1 hour
@@ -28,7 +28,7 @@ chroma_client = chromadb.PersistentClient(
 )
 
 collection = chroma_client.get_or_create_collection(
-    name="stocks_rag"
+    name="stocks_rag_gemma"
 )
 
 # ==========================
@@ -186,6 +186,7 @@ def ingestion_loop():
 # RAG QUERY
 # ==========================
 def rag_query(question: str) -> str:
+    print("QUERY is ", question)
     # 1️⃣ Compute embedding
     q_emb = ollama_embed([question])[0]
 
