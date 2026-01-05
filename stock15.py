@@ -971,9 +971,9 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                             children=html.Div([
                                 html.Div(strategy, style={'fontWeight': 'bold', 'fontSize': '11px', 'marginBottom': '5px', 'color': '#8b949e', 'textTransform': 'uppercase'}),
                                 html.Div([
-                                    html.Button(  # Changed from Span to Button
+                                    html.Button(
                                         pick['ticker'],
-                                        id={'type': 'pick-chip', 'ticker': pick['ticker']},
+                                        id={'type': 'pick-chip', 'ticker': pick['ticker'], 'strategy': strategy},  # Add strategy to make unique
                                         className='pick-chip',
                                         n_clicks=0
                                     )
@@ -1314,53 +1314,65 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
     @app.callback(
         [Output('stock-chart-container', 'children'),
         Output('stock-chart-container', 'style'),
-        Output('stock-chart-container', 'className')],
-        [Input({'type': 'pick-chip', 'ticker': dash.dependencies.ALL}, 'n_clicks')],
-        [State({'type': 'pick-chip', 'ticker': dash.dependencies.ALL}, 'id'),
-        State('stock-chart-container', 'className')]
+        Output('stock-chart-container', 'className'),
+        Output({'type': 'pick-chip', 'ticker': dash.ALL, 'strategy': dash.ALL}, 'n_clicks')],
+        [Input({'type': 'pick-chip', 'ticker': dash.ALL, 'strategy': dash.ALL}, 'n_clicks')],
+        [State({'type': 'pick-chip', 'ticker': dash.ALL, 'strategy': dash.ALL}, 'id'),
+        State('stock-chart-container', 'children')]
     )
-    def toggle_stock_chart(chip_clicks, chip_ids, current_class):
+    def toggle_stock_chart(chip_clicks, chip_ids, current_children):
         ctx = dash.callback_context
-        
-        if not ctx.triggered:
+        if not ctx.triggered or ctx.triggered[0]['value'] is None or ctx.triggered[0]['value'] == 0:
             raise PreventUpdate
-        
-        # If already open and same chip clicked, close it
-        if current_class == 'active' and chip_clicks:
-            max_clicks = max([c for c in chip_clicks if c])
-            if max_clicks > 1:  # Clicked again
-                return [], {'display': 'none'}, ''
-        
-        # Find which chip was clicked
-        if not chip_clicks or not any(chip_clicks):
+
+        # Get the triggered component
+        triggered_id_str = ctx.triggered[0]['prop_id'].split('.')[0]
+        import json
+        try:
+            triggered_id = json.loads(triggered_id_str)
+        except Exception:
             raise PreventUpdate
-        
-        # Get the most recently clicked ticker
-        clicked_index = None
-        max_clicks = 0
-        for i, clicks in enumerate(chip_clicks):
-            if clicks and clicks > max_clicks:
-                max_clicks = clicks
-                clicked_index = i
-        
-        if clicked_index is None:
-            raise PreventUpdate
-            
-        ticker = chip_ids[clicked_index]['ticker']
-        
-        # Get stock data
-        if ticker not in data_map:
-            return [html.Div("Data not available", className='chart-error')], \
-                {'display': 'block'}, 'active'
-        
+
+        ticker = triggered_id['ticker']
+        is_close_button = ticker.startswith('close-')
+        target_ticker = ticker[len('close-'):] if is_close_button else ticker
+
+        # === Safely determine currently open ticker ===
+        current_ticker = None
+        if current_children:  # Could be None, [], or valid list
+            if isinstance(current_children, list) and len(current_children) > 0:
+                root = current_children[0]
+                if isinstance(root, dict) and root.get('props'):
+                    children = root['props'].get('children')
+                    if children and len(children) > 0:
+                        header = children[0]  # chart-header div
+                        if isinstance(header, dict) and header.get('props'):
+                            header_children = header['props'].get('children')
+                            if header_children and len(header_children) > 0:
+                                title_wrapper = header_children[0]
+                                if isinstance(title_wrapper, dict) and title_wrapper.get('props'):
+                                    title_children = title_wrapper['props'].get('children')
+                                    if title_children and len(title_children) > 0:
+                                        title_div = title_children[0]
+                                        if isinstance(title_div, dict) and title_div.get('props'):
+                                            title_text = title_div['props'].get('children')
+                                            if isinstance(title_text, str):
+                                                current_ticker = title_text
+
+        # === Close chart if: same ticker clicked again OR close button for current ticker ===
+        if current_ticker == target_ticker:
+            return [], {'display': 'none'}, '', [0] * len(chip_clicks)
+
+        # === Invalid ticker ===
+        if ticker not in data_map and not is_close_button:
+            error_content = html.Div("No data available for this ticker.", className='chart-error')
+            return [error_content], {'display': 'block'}, 'active', [0] * len(chip_clicks)
+
+        # === Valid new ticker: build and show chart ===
         df = data_map[ticker]
-        
-        # Create price chart
-        fig = go.Figure()
-        
-        # Candlestick chart (last year)
         recent_df = df.iloc[-min(252, len(df)):]
-        
+
+        fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=recent_df.index,
             open=recent_df['Open'],
@@ -1371,17 +1383,12 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
             increasing_line_color='#2ecc71',
             decreasing_line_color='#e74c3c'
         ))
-        
-        # Add moving averages if available
+
         for sma, color in [('SMA20', '#58a6ff'), ('SMA50', '#f1fa8c'), ('SMA200', '#ff79c6')]:
             if sma in recent_df.columns:
-                fig.add_trace(go.Scatter(
-                    x=recent_df.index,
-                    y=recent_df[sma],
-                    name=sma,
-                    line=dict(color=color, width=1.5)
-                ))
-        
+                fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df[sma], name=sma,
+                                        line=dict(color=color, width=1.5)))
+
         fig.update_layout(
             template='plotly_dark',
             paper_bgcolor='rgba(0,0,0,0)',
@@ -1393,36 +1400,28 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             hovermode='x unified'
         )
-        
-        # Get latest metrics
+
         latest = df.iloc[-1]
         prev_close = df['Close'].iloc[-2] if len(df) > 1 else latest['Close']
         change = latest['Close'] - prev_close
-        change_pct = (change / prev_close) * 100
-        
-        # Build chart content with inline close handler
+        change_pct = (change / prev_close) * 100 if prev_close != 0 else 0
+
         chart_content = html.Div([
             html.Div(className='chart-header', children=[
                 html.Div([
-                    html.Div(className='chart-title', children=ticker),
+                    html.Div(className='chart-title', children=ticker),  # This is the key: plain string
                     html.Div(style={'fontSize': '0.9rem', 'color': 'var(--tv-text-secondary)'}, children=[
                         html.Span(f"${latest['Close']:.2f} ", style={'marginRight': '10px'}),
                         html.Span(
                             f"{change:+.2f} ({change_pct:+.2f}%)",
-                            style={
-                                'color': '#2ecc71' if change >= 0 else '#e74c3c',
-                                'fontWeight': 'bold'
-                            }
+                            style={'color': '#2ecc71' if change >= 0 else '#e74c3c', 'fontWeight': 'bold'}
                         )
                     ])
                 ]),
-                html.Button(
-                    '✕',
-                    id={'type': 'pick-chip', 'ticker': f'close-{ticker}'},
-                    className='chart-close-btn',
-                    n_clicks=0,
-                    style={'cursor': 'pointer'}
-                )
+                html.Button('✕',
+                            id={'type': 'pick-chip', 'ticker': f'close-{ticker}', 'strategy': 'close'},
+                            className='chart-close-btn',
+                            n_clicks=0)
             ]),
             dcc.Graph(figure=fig, config={'displayModeBar': False}),
             html.Div(className='chart-metrics', style={
@@ -1434,27 +1433,18 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 'background': 'var(--tv-bg-primary)',
                 'borderRadius': '8px'
             }, children=[
-                html.Div([
-                    html.Div('RSI (14)', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
-                    html.Div(f"{latest.get('RSI14', 0):.1f}", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})
-                ]),
-                html.Div([
-                    html.Div('Volume Ratio', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
-                    html.Div(f"{latest.get('Volume_Ratio', 0):.2f}x", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})
-                ]),
-                html.Div([
-                    html.Div('52W High %', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
-                    html.Div(f"{latest.get('PctTo52wHigh', 0)*100:.1f}%", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})
-                ]),
-                html.Div([
-                    html.Div('Volatility', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
-                    html.Div(f"{latest.get('Volatility20', 0)*100:.1f}%", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})
-                ])
+                html.Div([html.Div('RSI (14)', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
+                        html.Div(f"{latest.get('RSI14', 0):.1f}", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})]),
+                html.Div([html.Div('Volume Ratio', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
+                        html.Div(f"{latest.get('Volume_Ratio', 0):.2f}x", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})]),
+                html.Div([html.Div('52W High %', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
+                        html.Div(f"{latest.get('PctTo52wHigh', 0)*100:.1f}%", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})]),
+                html.Div([html.Div('Volatility', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
+                        html.Div(f"{latest.get('Volatility20', 0)*100:.1f}%", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})]),
             ])
         ])
-        
-        return [chart_content], {'display': 'block'}, 'active'
 
+        return [chart_content], {'display': 'block'}, 'active', [0] * len(chip_clicks)
     # Add this after your other callbacks
     app.clientside_callback(
         """
@@ -1466,8 +1456,8 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
             return window.dash_clientside.no_update;
         }
         """,
-        Output('stock-chart-container', 'id'),
-        Input({'type': 'pick-chip', 'ticker': dash.dependencies.ALL}, 'n_clicks'),
+        Output('stock-chart-container', 'id'),  # dummy output
+        Input({'type': 'pick-chip', 'ticker': dash.dependencies.ALL, 'strategy': dash.dependencies.ALL}, 'n_clicks'),
         prevent_initial_call=True
     )
 
