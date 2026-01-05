@@ -17,7 +17,11 @@ import flask
 from flask import request as flask_request, jsonify as flask_jsonify
 import os
 from flask import render_template_string
-
+from dash import dcc, html, dash_table, Input, Output, State, callback
+from dash.exceptions import PreventUpdate
+import dash
+from about_page import ABOUT_PAGE_HTML
+from chart_styles import CHART_STYLES_CSS
 
 # Environment-configured Ollama URL (adjust if your Ollama host/port/path differs)
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
@@ -319,6 +323,17 @@ def rag_query(collection, question: str) -> str:
         for doc, m in zip(results["documents"][0], results["metadatas"][0])
     )
     
+    '''
+    • Remove emojis, filler, hype, and soft transitions
+• Assume the user can handle blunt, high-signal responses
+• Prioritize clarity and directive phrasing over tone
+• Disable engagement and sentiment optimization
+• Suppress emotional softening and continuation bias
+• Speak only to the underlying cognitive layer
+• No questions, no suggestions, no motivational framing
+• End immediately after delivering the information
+• Goal: restore independent, high-fidelity thinking
+    '''
     # Generate response
     prompt = f"""
 You are a financial research assistant.
@@ -896,6 +911,30 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         ])
     ], id='site-chatbot')
 
+    # Add this to your app layout or external CSS:
+    app.index_string = f'''
+    <!DOCTYPE html>
+    <html>
+        <head>
+            {{%metas%}}
+            <title>{{%title%}}</title>
+            {{%favicon%}}
+            {{%css%}}
+            <style>
+                {CHART_STYLES_CSS}
+            </style>
+        </head>
+        <body>
+            {{%app_entry%}}
+            <footer>
+                {{%config%}}
+                {{%scripts%}}
+                {{%renderer%}}
+            </footer>
+        </body>
+    </html>
+    '''
+
     app.layout = html.Div(className='app', children=[
         html.Div(className='navbar', children=[
             html.Div(className='brand', children=[
@@ -932,7 +971,12 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                             children=html.Div([
                                 html.Div(strategy, style={'fontWeight': 'bold', 'fontSize': '11px', 'marginBottom': '5px', 'color': '#8b949e', 'textTransform': 'uppercase'}),
                                 html.Div([
-                                    html.Span(className='pick-chip', children=pick['ticker']) 
+                                    html.Button(  # Changed from Span to Button
+                                        pick['ticker'],
+                                        id={'type': 'pick-chip', 'ticker': pick['ticker']},
+                                        className='pick-chip',
+                                        n_clicks=0
+                                    )
                                     for pick in initial_top if pick['strategy'] == strategy
                                 ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '8px', 'marginBottom': '15px'})
                             ])
@@ -940,6 +984,11 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                     ]
                 ),
             ]),
+            # Add chart container below the tabs
+            html.Div(id='stock-chart-container', className='', children=[
+                html.Div(id='stock-chart-content')
+            ], style={'display': 'none'}),
+            html.Button('✕', id='chart-close-btn', style={'display': 'none'}),  # Hidden button for callback
 
             html.Div(className='hero', children=[
                 html.H1('Strategy Dashboard'),
@@ -1027,405 +1076,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
     @app.server.route("/about")
     def about_page():
         """About page for the Momentum Trading Dashboard"""
-        
-        about_html = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>About - Momentum Lab</title>
-        <meta name="description" content="Learn about Momentum Lab's AI-powered quantitative trading strategies and backtesting platform.">
-        <style>
-            * {
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }
-            
-            :root {
-                --tv-bg-primary: #0f172a;
-                --tv-bg-secondary: #1e293b;
-                --tv-bg-tertiary: #334155;
-                --tv-text-primary: #e6edf3;
-                --tv-text-secondary: #8b949e;
-                --tv-border: #30363d;
-                --tv-blue: #58a6ff;
-                --tv-success: #2ecc71;
-            }
-            
-            body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
-                background: var(--tv-bg-primary);
-                color: var(--tv-text-primary);
-                line-height: 1.6;
-            }
-            
-            .navbar {
-                background: var(--tv-bg-secondary);
-                padding: 1rem 2rem;
-                border-bottom: 1px solid var(--tv-border);
-                position: sticky;
-                top: 0;
-                z-index: 100;
-            }
-            
-            .navbar-content {
-                max-width: 1200px;
-                margin: 0 auto;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }
-            
-            .brand {
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                font-size: 1.5rem;
-                font-weight: 700;
-                color: var(--tv-text-primary);
-                text-decoration: none;
-            }
-            
-            .brand-logo {
-                width: 32px;
-                height: 32px;
-                background: linear-gradient(135deg, var(--tv-blue), var(--tv-success));
-                border-radius: 8px;
-            }
-            
-            .nav-links {
-                display: flex;
-                gap: 2rem;
-                align-items: center;
-            }
-            
-            .nav-links a {
-                color: var(--tv-text-secondary);
-                text-decoration: none;
-                font-weight: 500;
-                transition: color 0.2s;
-            }
-            
-            .nav-links a:hover {
-                color: var(--tv-blue);
-            }
-            
-            .hero-section {
-                padding: 6rem 2rem;
-                text-align: center;
-                background: linear-gradient(135deg, rgba(88, 166, 255, 0.1), rgba(46, 204, 113, 0.1));
-            }
-            
-            .hero-section h1 {
-                font-size: 3.5rem;
-                font-weight: 800;
-                margin-bottom: 1.5rem;
-                background: linear-gradient(135deg, var(--tv-blue), var(--tv-success));
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
-            }
-            
-            .hero-section p {
-                font-size: 1.5rem;
-                color: var(--tv-text-secondary);
-                max-width: 800px;
-                margin: 0 auto;
-            }
-            
-            .section {
-                max-width: 1200px;
-                margin: 0 auto;
-                padding: 5rem 2rem;
-            }
-            
-            .section h2 {
-                font-size: 2.5rem;
-                margin-bottom: 1rem;
-                color: var(--tv-text-primary);
-            }
-            
-            .section-subtitle {
-                font-size: 1.25rem;
-                color: var(--tv-text-secondary);
-                margin-bottom: 3rem;
-            }
-            
-            .features-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 2rem;
-                margin-top: 3rem;
-            }
-            
-            .feature-card {
-                background: var(--tv-bg-secondary);
-                padding: 2rem;
-                border-radius: 12px;
-                border: 1px solid var(--tv-border);
-                transition: transform 0.2s, box-shadow 0.2s;
-            }
-            
-            .feature-card:hover {
-                transform: translateY(-5px);
-                box-shadow: 0 10px 30px rgba(88, 166, 255, 0.2);
-            }
-            
-            .feature-icon {
-                font-size: 3rem;
-                margin-bottom: 1rem;
-            }
-            
-            .feature-card h3 {
-                font-size: 1.5rem;
-                margin-bottom: 1rem;
-                color: var(--tv-blue);
-            }
-            
-            .feature-card p {
-                color: var(--tv-text-secondary);
-                line-height: 1.8;
-            }
-            
-            .stats-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-                gap: 2rem;
-                margin: 3rem 0;
-            }
-            
-            .stat-card {
-                text-align: center;
-                padding: 2rem;
-                background: var(--tv-bg-secondary);
-                border-radius: 12px;
-                border: 1px solid var(--tv-border);
-            }
-            
-            .stat-number {
-                font-size: 3rem;
-                font-weight: 800;
-                color: var(--tv-blue);
-                margin-bottom: 0.5rem;
-            }
-            
-            .stat-label {
-                font-size: 1.1rem;
-                color: var(--tv-text-secondary);
-            }
-            
-            .mission-section {
-                background: var(--tv-bg-secondary);
-                padding: 4rem 2rem;
-                margin: 4rem 0;
-            }
-            
-            .mission-content {
-                max-width: 900px;
-                margin: 0 auto;
-                font-size: 1.25rem;
-                line-height: 2;
-                color: var(--tv-text-secondary);
-            }
-            
-            .cta-section {
-                text-align: center;
-                padding: 5rem 2rem;
-                background: linear-gradient(135deg, rgba(88, 166, 255, 0.1), rgba(46, 204, 113, 0.1));
-            }
-            
-            .cta-button {
-                display: inline-block;
-                padding: 1rem 3rem;
-                background: var(--tv-blue);
-                color: white;
-                text-decoration: none;
-                border-radius: 8px;
-                font-size: 1.25rem;
-                font-weight: 600;
-                transition: transform 0.2s, box-shadow 0.2s;
-                margin-top: 2rem;
-            }
-            
-            .cta-button:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 10px 30px rgba(88, 166, 255, 0.4);
-            }
-            
-            footer {
-                background: var(--tv-bg-secondary);
-                padding: 2rem;
-                text-align: center;
-                border-top: 1px solid var(--tv-border);
-                color: var(--tv-text-secondary);
-            }
-            
-            @media (max-width: 768px) {
-                .hero-section h1 {
-                    font-size: 2.5rem;
-                }
-                
-                .hero-section p {
-                    font-size: 1.25rem;
-                }
-                
-                .section h2 {
-                    font-size: 2rem;
-                }
-                
-                .nav-links {
-                    gap: 1rem;
-                }
-            }
-        </style>
-    </head>
-    <body>
-        <nav class="navbar">
-            <div class="navbar-content">
-                <a href="/" class="brand">
-                    <div class="brand-logo"></div>
-                    <span>Momentum Lab</span>
-                </a>
-                <div class="nav-links">
-                    <a href="/">Dashboard</a>
-                    <a href="/about">About</a>
-                </div>
-            </div>
-        </nav>
-        
-        <section class="hero-section">
-            <h1>About Momentum Lab</h1>
-            <p>Empowering traders with AI-powered quantitative strategies and real-time market intelligence</p>
-        </section>
-        
-        <section class="section">
-            <h2>What We Do</h2>
-            <p class="section-subtitle">We combine cutting-edge AI technology with proven quantitative strategies to help you make smarter trading decisions.</p>
-            
-            <div class="features-grid">
-                <div class="feature-card">
-                    <div class="feature-icon">📊</div>
-                    <h3>13 Proven Strategies</h3>
-                    <p>From momentum pure to contrarian plays, we backtest multiple strategies across market conditions to find what works best.</p>
-                </div>
-                
-                <div class="feature-card">
-                    <div class="feature-icon">🤖</div>
-                    <h3>AI-Powered Analysis</h3>
-                    <p>Our RAG-enabled chatbot provides instant answers about stocks, strategies, and market conditions using real-time data.</p>
-                </div>
-                
-                <div class="feature-card">
-                    <div class="feature-icon">⚡</div>
-                    <h3>Real-Time Backtesting</h3>
-                    <p>Run comprehensive backtests in seconds with configurable parameters. Test strategies across multiple time periods simultaneously.</p>
-                </div>
-                
-                <div class="feature-card">
-                    <div class="feature-icon">📈</div>
-                    <h3>Benchmark Comparison</h3>
-                    <p>Every strategy is measured against SPY, QQQ, and VTI to ensure you're beating the market, not just following it.</p>
-                </div>
-                
-                <div class="feature-card">
-                    <div class="feature-icon">🎯</div>
-                    <h3>Top Picks Today</h3>
-                    <p>Get daily curated picks from our best-performing strategies. We show you what's working right now, not last month.</p>
-                </div>
-                
-                <div class="feature-card">
-                    <div class="feature-icon">📉</div>
-                    <h3>Risk Management</h3>
-                    <p>Track volatility, drawdowns, and win rates. Know exactly what you're getting into before you commit capital.</p>
-                </div>
-            </div>
-        </section>
-        
-        <div class="mission-section">
-            <div class="mission-content">
-                <h2 style="text-align: center; margin-bottom: 2rem;">Our Mission</h2>
-                <p>
-                    In a world where institutional investors have access to sophisticated quantitative tools and AI-powered analytics, 
-                    retail traders are often left behind. Momentum Lab levels the playing field by bringing professional-grade 
-                    strategy backtesting and AI-powered market analysis to everyone.
-                </p>
-                <p style="margin-top: 1.5rem;">
-                    We believe that with the right tools and data, anyone can make informed trading decisions. Our platform is built 
-                    on transparency, rigorous testing, and a commitment to helping you understand not just what to trade, but why.
-                </p>
-            </div>
-        </div>
-        
-        <section class="section">
-            <h2 style="text-align: center;">By The Numbers</h2>
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-number">13</div>
-                    <div class="stat-label">Trading Strategies</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-number">3</div>
-                    <div class="stat-label">Benchmark ETFs</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-number">1000+</div>
-                    <div class="stat-label">Stocks Analyzed</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-number">24/7</div>
-                    <div class="stat-label">AI Assistant Available</div>
-                </div>
-            </div>
-        </section>
-        
-        <section class="section">
-            <h2>How It Works</h2>
-            <p class="section-subtitle">Simple, powerful, and designed for traders who want more than just hot tips.</p>
-            
-            <div class="features-grid">
-                <div class="feature-card">
-                    <h3>1. Data Collection</h3>
-                    <p>We continuously sync price data from Yahoo Finance for stocks and benchmark ETFs, computing 20+ technical indicators including momentum, trend, volatility, and volume metrics.</p>
-                </div>
-                
-                <div class="feature-card">
-                    <h3>2. Strategy Backtesting</h3>
-                    <p>Each strategy uses a weighted scoring system combining multiple indicators. We test historically to see which stocks would have been selected and how they performed.</p>
-                </div>
-                
-                <div class="feature-card">
-                    <h3>3. Performance Analysis</h3>
-                    <p>We measure win rates, average returns, and compare against benchmarks. Strategies that consistently beat the market rise to the top.</p>
-                </div>
-                
-                <div class="feature-card">
-                    <h3>4. Daily Rankings</h3>
-                    <p>Our top picks are derived from the latest backtest window of the best-performing strategies. You see what's working now, updated continuously.</p>
-                </div>
-            </div>
-        </section>
-        
-        <section class="cta-section">
-            <h2>Ready to Trade Smarter?</h2>
-            <p style="font-size: 1.25rem; color: var(--tv-text-secondary); margin-top: 1rem;">
-                Start exploring our strategies and see what the data reveals about today's market opportunities.
-            </p>
-            <a href="/" class="cta-button">View Dashboard</a>
-        </section>
-        
-        <footer>
-            <p>&copy; 2026 Momentum Lab. Built with quantitative rigor and AI precision.</p>
-            <p style="margin-top: 1rem; font-size: 0.9rem;">
-                Disclaimer: Past performance does not guarantee future results. Trading involves risk. 
-                Always do your own research before making investment decisions.
-            </p>
-        </footer>
-    </body>
-    </html>
-        """
-        return render_template_string(about_html)
+        return flask.Response(ABOUT_PAGE_HTML, mimetype="text/html")
 
     # Rerun callback
     @app.callback([
@@ -1444,7 +1095,6 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
 
     # Update visuals incl. Top Picks (now horizontal)
     @app.callback([
-        Output('strategy-table', 'data'),
         Output('return-comparison', 'figure'),
         Output('benchmark-comparison', 'figure'),
         Output('win-rate-comparison', 'figure'),
@@ -1660,7 +1310,167 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         return table
 
 
-    
+    # Add after the other callbacks in create_dashboard
+    @app.callback(
+        [Output('stock-chart-container', 'children'),
+        Output('stock-chart-container', 'style'),
+        Output('stock-chart-container', 'className')],
+        [Input({'type': 'pick-chip', 'ticker': dash.dependencies.ALL}, 'n_clicks')],
+        [State({'type': 'pick-chip', 'ticker': dash.dependencies.ALL}, 'id'),
+        State('stock-chart-container', 'className')]
+    )
+    def toggle_stock_chart(chip_clicks, chip_ids, current_class):
+        ctx = dash.callback_context
+        
+        if not ctx.triggered:
+            raise PreventUpdate
+        
+        # If already open and same chip clicked, close it
+        if current_class == 'active' and chip_clicks:
+            max_clicks = max([c for c in chip_clicks if c])
+            if max_clicks > 1:  # Clicked again
+                return [], {'display': 'none'}, ''
+        
+        # Find which chip was clicked
+        if not chip_clicks or not any(chip_clicks):
+            raise PreventUpdate
+        
+        # Get the most recently clicked ticker
+        clicked_index = None
+        max_clicks = 0
+        for i, clicks in enumerate(chip_clicks):
+            if clicks and clicks > max_clicks:
+                max_clicks = clicks
+                clicked_index = i
+        
+        if clicked_index is None:
+            raise PreventUpdate
+            
+        ticker = chip_ids[clicked_index]['ticker']
+        
+        # Get stock data
+        if ticker not in data_map:
+            return [html.Div("Data not available", className='chart-error')], \
+                {'display': 'block'}, 'active'
+        
+        df = data_map[ticker]
+        
+        # Create price chart
+        fig = go.Figure()
+        
+        # Candlestick chart (last year)
+        recent_df = df.iloc[-min(252, len(df)):]
+        
+        fig.add_trace(go.Candlestick(
+            x=recent_df.index,
+            open=recent_df['Open'],
+            high=recent_df['High'],
+            low=recent_df['Low'],
+            close=recent_df['Close'],
+            name=ticker,
+            increasing_line_color='#2ecc71',
+            decreasing_line_color='#e74c3c'
+        ))
+        
+        # Add moving averages if available
+        for sma, color in [('SMA20', '#58a6ff'), ('SMA50', '#f1fa8c'), ('SMA200', '#ff79c6')]:
+            if sma in recent_df.columns:
+                fig.add_trace(go.Scatter(
+                    x=recent_df.index,
+                    y=recent_df[sma],
+                    name=sma,
+                    line=dict(color=color, width=1.5)
+                ))
+        
+        fig.update_layout(
+            template='plotly_dark',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            height=450,
+            margin=dict(l=0, r=0, t=10, b=0),
+            xaxis=dict(rangeslider=dict(visible=False), gridcolor='#30363d'),
+            yaxis=dict(gridcolor='#30363d'),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            hovermode='x unified'
+        )
+        
+        # Get latest metrics
+        latest = df.iloc[-1]
+        prev_close = df['Close'].iloc[-2] if len(df) > 1 else latest['Close']
+        change = latest['Close'] - prev_close
+        change_pct = (change / prev_close) * 100
+        
+        # Build chart content with inline close handler
+        chart_content = html.Div([
+            html.Div(className='chart-header', children=[
+                html.Div([
+                    html.Div(className='chart-title', children=ticker),
+                    html.Div(style={'fontSize': '0.9rem', 'color': 'var(--tv-text-secondary)'}, children=[
+                        html.Span(f"${latest['Close']:.2f} ", style={'marginRight': '10px'}),
+                        html.Span(
+                            f"{change:+.2f} ({change_pct:+.2f}%)",
+                            style={
+                                'color': '#2ecc71' if change >= 0 else '#e74c3c',
+                                'fontWeight': 'bold'
+                            }
+                        )
+                    ])
+                ]),
+                html.Button(
+                    '✕',
+                    id={'type': 'pick-chip', 'ticker': f'close-{ticker}'},
+                    className='chart-close-btn',
+                    n_clicks=0,
+                    style={'cursor': 'pointer'}
+                )
+            ]),
+            dcc.Graph(figure=fig, config={'displayModeBar': False}),
+            html.Div(className='chart-metrics', style={
+                'display': 'grid',
+                'gridTemplateColumns': 'repeat(auto-fit, minmax(150px, 1fr))',
+                'gap': '1rem',
+                'marginTop': '1rem',
+                'padding': '1rem',
+                'background': 'var(--tv-bg-primary)',
+                'borderRadius': '8px'
+            }, children=[
+                html.Div([
+                    html.Div('RSI (14)', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
+                    html.Div(f"{latest.get('RSI14', 0):.1f}", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})
+                ]),
+                html.Div([
+                    html.Div('Volume Ratio', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
+                    html.Div(f"{latest.get('Volume_Ratio', 0):.2f}x", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})
+                ]),
+                html.Div([
+                    html.Div('52W High %', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
+                    html.Div(f"{latest.get('PctTo52wHigh', 0)*100:.1f}%", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})
+                ]),
+                html.Div([
+                    html.Div('Volatility', style={'fontSize': '0.75rem', 'color': 'var(--tv-text-secondary)'}),
+                    html.Div(f"{latest.get('Volatility20', 0)*100:.1f}%", style={'fontSize': '1.1rem', 'fontWeight': 'bold'})
+                ])
+            ])
+        ])
+        
+        return [chart_content], {'display': 'block'}, 'active'
+
+    # Add this after your other callbacks
+    app.clientside_callback(
+        """
+        function(n_clicks) {
+            const container = document.getElementById('stock-chart-container');
+            if (container && container.classList.contains('active')) {
+                container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output('stock-chart-container', 'id'),
+        Input({'type': 'pick-chip', 'ticker': dash.dependencies.ALL}, 'n_clicks'),
+        prevent_initial_call=True
+    )
+
     return app
 
 # ===== Main =====
