@@ -4,6 +4,8 @@ Dark-themed Momentum Trading Dashboard with "Top Picks Today"
 - Top picks are derived from the latest backtest window for the best-performing strategy
 - Top Picks now displayed horizontally in one line
 """
+from landing_page import LANDING_PAGE_HTML
+
 import time
 import feedparser
 import chromadb
@@ -697,7 +699,12 @@ def run_comprehensive_backtest(data_map: dict, benchmark_data: dict, strategies:
 def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str], data_map: dict, benchmark_data: dict, strategies: List[str], default_top_n: int = 10, default_months_back: int = 6):
     if backtest_results.empty:
         return None
-    app = dash.Dash(__name__, suppress_callback_exceptions=True, title="Momentum Trading Dashboard")
+    app = dash.Dash(
+        __name__, 
+        suppress_callback_exceptions=True, 
+        title="Momentum Trading Dashboard",
+        url_base_pathname='/dashboard/'  # This sets both prefixes automatically
+    )
     
 
     @app.server.route('/api/chat', methods=['POST'])
@@ -941,7 +948,10 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
                 html.Div(className='brand-logo'), 
                 html.Span('Momentum Lab')
             ]),
+            # In navbar section of app.layout (line ~728), update nav-actions to include home:
             html.Div(className='nav-actions', children=[
+                html.A('Home', href='/', className='nav-link', 
+                    style={'marginRight': '20px', 'color': '#8b949e', 'textDecoration': 'none'}),
                 html.A('About', href='/about', className='nav-link', 
                     style={'marginRight': '20px', 'color': '#8b949e', 'textDecoration': 'none'}),
                 html.Span(className='badge', children='Quant-powered Strategies'), 
@@ -1078,6 +1088,11 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         """About page for the Momentum Trading Dashboard"""
         return flask.Response(ABOUT_PAGE_HTML, mimetype="text/html")
 
+    @app.server.route("/")
+    def landing_page():
+        """Landing page for Momentum Trading Dashboard"""
+        return flask.Response(LANDING_PAGE_HTML, mimetype="text/html")
+    
     # Rerun callback
     @app.callback([
         Output('store-results', 'data'),
