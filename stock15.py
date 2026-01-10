@@ -49,7 +49,6 @@ CHROMA_DB_PATH = "./chroma_db"
 REFRESH_DB = False
 
 # Create a persistent cache directory
-memory = Memory("cache/backtest", verbose=0, compress=1)  # compress=1 for smaller files
 
 try:
     import yfinance as yf
@@ -88,6 +87,25 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
+
+
+# Replace the Memory initialization (around line 36)
+from datetime import datetime
+
+# Create a cache directory with daily invalidation
+def get_cache_key():
+    """Generate cache key that changes at 4 AM daily"""
+    now = datetime.now()
+    # If before 4 AM, use previous day's date
+    if now.hour < 4:
+        cache_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+    else:
+        cache_date = now.strftime('%Y-%m-%d')
+    return cache_date
+
+# Memory cache with daily invalidation
+memory = Memory(f"cache/backtest_{get_cache_key()}", verbose=0, compress=1)
+
 
 # ===== Optional: Add timing to the RAG embedding function =====
 def ollama_embed(texts: List[str]) -> np.ndarray:
@@ -659,22 +677,51 @@ def run_comprehensive_backtest_old(data_map: dict, benchmark_data: dict, strateg
                 continue
     return pd.DataFrame(results)
 
-# 3. Replace the entire run_comprehensive_backtest function with this:
+# Replace the run_comprehensive_backtest function (around line 565)
 @memory.cache
-def run_comprehensive_backtest(data_map: dict, benchmark_data: dict, strategies: List[str], 
+def run_comprehensive_backtest(ticker_list: List[str], benchmark_list: List[str],
+                                strategies: List[str], 
                                 top_n: int = 10, lookback_days: int = 30, months_back: int = 6,
                                 n_jobs: int = -1) -> pd.DataFrame:
     """
     Run comprehensive backtest with PARALLEL execution across strategies.
+    Only months_back is used for caching.
     
     Args:
-        n_jobs: Number of parallel jobs. -1 means use all processors, -2 means all but one, etc.
+        ticker_list: List of ticker symbols (for loading data)
+        benchmark_list: List of benchmark ETF symbols
+        strategies: List of strategy names
+        top_n: Number of top stocks to select
+        lookback_days: Days to look back for scoring
+        months_back: CACHE KEY - Only parameter affecting cache
+        n_jobs: Number of parallel jobs. -1 means use all processors
     """
+    # Load data inside the cached function
+    data_map = {}
+    for ticker in ticker_list:
+        path = os.path.join(DATA_DIR, f"{ticker}.csv")
+        df = read_csv_if_exists(path)
+        if df is not None and not df.empty:
+            df = compute_indicators(df)
+            data_map[ticker] = df
+    
+    benchmark_data = {}
+    for etf in benchmark_list:
+        path = os.path.join(DATA_DIR, f"{etf}.csv")
+        df = read_csv_if_exists(path)
+        if df is not None and not df.empty:
+            benchmark_data[etf] = df
+    
+    if len(data_map) == 0:
+        logging.warning("No ticker data loaded for backtest")
+        return pd.DataFrame()
+    
     days_back = max(1, months_back) * 30
     test_intervals = range(0, days_back, 2)
     
     logging.info(f"Starting parallel backtest: {len(strategies)} strategies × {len(test_intervals)} time windows")
     logging.info(f"Using n_jobs={n_jobs} for parallelization")
+    logging.info(f"Cache key: months_back={months_back}")
     
     # Parallel execution across strategies
     parallel_results = Parallel(n_jobs=n_jobs, verbose=10, backend="loky")(
@@ -1093,7 +1140,7 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
         """Landing page for Momentum Trading Dashboard"""
         return flask.Response(LANDING_PAGE_HTML, mimetype="text/html")
     
-    # Rerun callback
+    # Replace the rerun callback (around line 825)
     @app.callback([
         Output('store-results', 'data'),
         Output('run-status', 'children')
@@ -1103,7 +1150,20 @@ def create_dashboard(backtest_results: pd.DataFrame, benchmark_columns: List[str
             raise PreventUpdate
         m = months if (months and months > 0) else default_months_back
         t = topn if (topn and topn > 0) else default_top_n
-        new_df = run_comprehensive_backtest(data_map, benchmark_data, strategies, top_n=t, lookback_days=30, months_back=m, n_jobs=-1)
+        
+        # Pass ticker lists instead of data_map
+        ticker_list = list(data_map.keys())
+        benchmark_list = list(benchmark_data.keys())
+        
+        new_df = run_comprehensive_backtest(
+            ticker_list, 
+            benchmark_list, 
+            strategies, 
+            top_n=t, 
+            lookback_days=30, 
+            months_back=m,  # Only this affects caching
+            n_jobs=-1
+        )
         if new_df.empty:
             return dash.no_update, 'No results. Check data and parameters.'
         return new_df.to_json(date_format='iso', orient='split'), f'Backtest complete — rows: {len(new_df)}, months={m}, top_n={t}'
@@ -1493,7 +1553,26 @@ def parse_args():
     p.add_argument('--months', type=int, default=3)
     return p.parse_args()
 
+# Add this function near the top with other utilities
+def cleanup_old_caches():
+    """Remove cache directories older than today"""
+    cache_base = Path("cache")
+    if not cache_base.exists():
+        return
+    
+    current_key = get_cache_key()
+    current_cache = f"backtest_{current_key}"
+    
+    for cache_dir in cache_base.glob("backtest_*"):
+        if cache_dir.name != current_cache:
+            try:
+                import shutil
+                shutil.rmtree(cache_dir)
+                logging.info(f"Cleaned up old cache: {cache_dir.name}")
+            except Exception as e:
+                logging.warning(f"Failed to clean cache {cache_dir.name}: {e}")
 
+# Replace the main function call to backtest (around line 1150)
 def main():
     args = parse_args()
     tickers = open("tickers.txt").readlines()
@@ -1519,7 +1598,23 @@ def main():
         "volatility_adjusted","value_momentum","quality_momentum",
         "mean_reversion","low_volatility","trending_value","volume_breakout","dividend_momentum","contrarian"
     ]
-    backtest_results = run_comprehensive_backtest(data_map, benchmark_data, strategies, top_n=args.top, lookback_days=30, months_back=args.months, n_jobs=-1)
+    
+    # Pass ticker lists for caching
+    ticker_list = list(data_map.keys())
+    benchmark_list = list(benchmark_data.keys())
+    
+    cleanup_old_caches()
+    
+    backtest_results = run_comprehensive_backtest(
+        ticker_list,
+        benchmark_list,
+        strategies, 
+        top_n=args.top, 
+        lookback_days=30, 
+        months_back=args.months,  # Cache key
+        n_jobs=-1
+    )
+    
     if backtest_results.empty:
         print('No backtest results.')
         return
